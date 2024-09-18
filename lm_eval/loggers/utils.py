@@ -4,7 +4,7 @@ import re
 import subprocess
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union, List
 
 import numpy as np
 from torch.utils.collect_env import get_pretty_env_info
@@ -36,7 +36,7 @@ def remove_none_pattern(input_string: str) -> Tuple[str, bool]:
     return result, removed
 
 
-def _handle_non_serializable(o: Any) -> Union[int, str, list]:
+def _handle_non_serializable(o: Any) -> Union[int, str, List]:
     """Handle non-serializable objects by converting them to serializable types.
 
     Args:
