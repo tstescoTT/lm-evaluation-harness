@@ -17,7 +17,7 @@ from typing import (
     Tuple,
     Union,
 )
-
+from collections import defaultdict
 
 try:
     import requests
@@ -419,7 +419,36 @@ class TemplateAPI(TemplateLM):
                     )
                 # raising exception will retry the request
                 response.raise_for_status()
-                outputs = await response.json()
+                # Handle vLLM streaming case: buffer response per choice
+                if payload.get('stream', False):
+                    choice_text = defaultdict(str)
+                    output = None
+                    async for chunk in response.content.iter_any():
+                        # Decode chunk from bytes to string
+                        chunk_data = chunk.decode("utf-8").strip()
+                        # Server-Sent Events (SSE) format starts with "data: "
+                        event_list = chunk_data[len("data: "):].split("\n\ndata: ")
+                        for event_str in event_list:
+                            if event_str == "[DONE]":
+                                # stop condition
+                                break
+                            try:
+                                # Convert the chunk data to JSON
+                                output = json.loads(event_str)
+                                for choice in output["choices"]:
+                                    choice_text[choice["index"]] += choice["text"]
+                            except json.JSONDecodeError as e:
+                                eval_logger.error(f"Failed to parse chunk data: {chunk_data}. Error: {e}")
+                                continue
+                    if output:
+                        # update the output with the concatenated text
+                        # assume that the other parameters did not change between chunks
+                        outputs = output
+                        for choice in output["choices"]:
+                            idx = choice["index"]
+                            outputs["choices"][idx]["text"] = choice_text[idx]
+                else:
+                    outputs = await response.json()
             answers = (
                 self.parse_generations(
                     outputs=outputs,
