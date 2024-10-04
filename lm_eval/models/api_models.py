@@ -21,7 +21,7 @@ from collections import defaultdict
 
 try:
     import requests
-    from aiohttp import ClientSession, TCPConnector
+    from aiohttp import ClientSession, TCPConnector, ClientTimeout
     from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
     from tqdm import tqdm
     from tqdm.asyncio import tqdm_asyncio
@@ -376,11 +376,14 @@ class TemplateAPI(TemplateLM):
             **kwargs,
         )
         cache_method = "generate_until" if generate else "loglikelihood"
+        # increase default timeout for API requests
+        timeout_value = ClientTimeout(total=600)
         try:
             async with session.post(
                 self.base_url,
                 json=payload,
                 headers=self.header,
+                timeout=timeout_value,
             ) as response:
                 if not response.ok:
                     error_text = await response.text()
