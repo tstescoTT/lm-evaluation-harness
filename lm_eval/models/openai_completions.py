@@ -134,9 +134,9 @@ class LocalChatCompletion(LocalCompletionsAPI):
         eos=None,
         **kwargs,
     ) -> dict:
-        assert (
-            type(messages) is not str
-        ), "chat-completions require the --apply_chat_template flag."
+        # assert (
+        #     type(messages) is not str
+        # ), "chat-completions require the --apply_chat_template flag."
         gen_kwargs.pop("do_sample", False)
         if "max_tokens" in gen_kwargs:
             max_tokens = gen_kwargs.pop("max_tokens")
@@ -290,3 +290,130 @@ class OpenAIChatCompletion(LocalChatCompletion):
             output.pop("stop")
             output["temperature"] = 1
         return output
+
+
+DEFAULT_IMAGE_PLACEHOLDER = "<image>"
+
+@register_model("local-mm-chat-completions")
+class LocalMMChatCompletion(OpenAIChatCompletion):
+    MULTIMODAL = True
+    
+    def __init__(
+        self,
+        base_url=None,
+        tokenizer_backend=None,
+        tokenized_requests=False,
+        max_images: int = 999,
+        interleave: bool = True,
+        processor_name: Optional[str] = None,
+        **kwargs,
+    ):
+        super().__init__(
+            base_url=base_url,
+            tokenizer_backend=tokenizer_backend,
+            tokenized_requests=tokenized_requests,
+            **kwargs,
+        )
+        self.max_images = max_images
+        self.interleave = interleave
+        self.chat_applied = False
+        
+        # Initialize the processor for handling images
+        # if processor_name is None:
+        #     processor_name = self.model
+        # self.processor = transformers.AutoProcessor.from_pretrained(
+        #     processor_name,
+        #     trust_remote_code=True,
+        # )
+
+    def _create_payload(
+        self,
+        messages: List[Dict],
+        generate=False,
+        gen_kwargs: dict = None,
+        seed=1234,
+        eos=None,
+        **kwargs,
+    ) -> dict:
+        if "visual" in kwargs:
+            # Handle multimodal input
+            messages = self._process_multimodal_messages(messages, kwargs["visual"])
+            
+        # Call parent class's _create_payload with processed messages
+        return super()._create_payload(
+            messages=messages,
+            generate=generate,
+            gen_kwargs=gen_kwargs,
+            seed=seed,
+            eos=eos,
+            **kwargs
+        )
+
+    def _process_multimodal_messages(
+        self,
+        messages: List[Dict],
+        images: List[List[str]],  # List of lists of image data for each message
+    ) -> List[Dict]:
+        """Process messages to include image data in the expected format."""
+        processed_messages = []
+        breakpoint()
+        for msg, img_list in zip(messages, images):
+            if not isinstance(msg["content"], str):
+                # Already processed message
+                processed_messages.append(msg)
+                continue
+                
+            content = msg["content"]
+            if not self.chat_applied:
+                content = replace_placeholders(
+                    content,
+                    DEFAULT_IMAGE_PLACEHOLDER,
+                    DEFAULT_IMAGE_PLACEHOLDER,
+                    self.max_images,
+                )
+            
+            # Process content based on interleave setting
+            if not self.interleave:
+                # Add all images first, then text
+                c = []
+                image_count = min(self.max_images, content.count(DEFAULT_IMAGE_PLACEHOLDER))
+                content = content.replace(DEFAULT_IMAGE_PLACEHOLDER, "")
+                
+                # Add image entries
+                for img in img_list[:image_count]:
+                    c.append({"type": "image", "image": img})
+                
+                # Add text entry
+                if content.strip():
+                    c.append({"type": "text", "text": content})
+                    
+            else:
+                # Interleave images and text
+                c = []
+                text_parts = content.split(DEFAULT_IMAGE_PLACEHOLDER)
+                img_idx = 0
+                
+                for i, part in enumerate(text_parts):
+                    if part.strip():
+                        c.append({"type": "text", "text": part})
+                    if i < len(text_parts) - 1 and img_idx < len(img_list) and img_idx < self.max_images:
+                        c.append({"type": "image", "image": img_list[img_idx]})
+                        img_idx += 1
+
+            # Create new message with processed content
+            new_msg = msg.copy()
+            new_msg["content"] = c
+            processed_messages.append(new_msg)
+            
+        return processed_messages
+
+    def apply_chat_template(
+        self, chat_history: List[Dict[str, str]], add_generation_prompt=True
+    ) -> str:
+        """Apply chat template with support for multimodal content."""
+        self.chat_applied = True
+        return self.processor.apply_chat_template(
+            chat_history,
+            add_generation_prompt=add_generation_prompt,
+            continue_final_message=not add_generation_prompt,
+        )
