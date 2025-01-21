@@ -1,15 +1,21 @@
+import copy
+import json
 import os
 from functools import cached_property
 from operator import itemgetter
 from typing import Any, Dict, List, Optional, Tuple, Union
+from io import BytesIO
+import base64
 
+# from PIL import Image
+from tenacity import retry, stop_after_attempt, wait_exponential
 from tqdm import tqdm
 
-from lm_eval.api.registry import register_model
-from lm_eval.models.api_models import TemplateAPI, JsonChatStr
-from lm_eval.models.utils import handle_stop_sequences
-from lm_eval.utils import eval_logger
 from lm_eval.api.instance import Instance
+from lm_eval.api.registry import register_model
+from lm_eval.models.api_models import JsonChatStr, TemplateAPI
+from lm_eval.models.utils import Collator, handle_stop_sequences
+from lm_eval.utils import eval_logger
 
 
 @register_model("local-completions")
@@ -211,13 +217,12 @@ class OpenAICompletionsAPI(LocalCompletionsAPI):
         return key
 
     def loglikelihood(self, requests, **kwargs):
-        assert (
-            self.model
-            in [
-                "babbage-002",
-                "davinci-002",
-            ]
-        ), f"Prompt loglikelihoods are only supported by OpenAI's API for {['babbage-002', 'davinci-002']}."
+        assert self.model in [
+            "babbage-002",
+            "davinci-002",
+        ], (
+            f"Prompt loglikelihoods are only supported by OpenAI's API for {['babbage-002', 'davinci-002']}."
+        )
         return super().loglikelihood(requests, **kwargs)
 
     def chat_template(self, chat_template: Union[bool, str] = False) -> Optional[str]:
@@ -268,9 +273,9 @@ class OpenAIChatCompletion(LocalCompletionsAPI):
         eos="<|endoftext|>",
         **kwargs,
     ) -> dict:
-        assert (
-            type(messages) is not str
-        ), "chat-completions require the --apply_chat_template flag."
+        assert type(messages) is not str, (
+            "chat-completions require the --apply_chat_template flag."
+        )
         gen_kwargs.pop("do_sample", False)
         if "max_tokens" in gen_kwargs:
             max_tokens = gen_kwargs.pop("max_tokens")
@@ -295,11 +300,10 @@ class OpenAIChatCompletion(LocalCompletionsAPI):
         return output
 
 
-DEFAULT_IMAGE_PLACEHOLDER = "<image>"
-
 @register_model("local-mm-chat-completions")
 class LocalMMChatCompletion(LocalCompletionsAPI):
     """Local Chat Completions API implementation with multimodal support."""
+
     MULTIMODAL = True
 
     def __init__(
@@ -319,7 +323,7 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
             tokenized_requests=tokenized_requests,
             **kwargs,
         )
-        
+
         self.max_images = max_images
         if self._batch_size > 1:
             eval_logger.warning(
@@ -330,63 +334,63 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
     def create_message(
         self,
         messages: Union[List[Tuple[str, Dict[str, Any]]], List[str], List[JsonChatStr]],
-        generate: bool = False
+        generate: bool = False,
     ) -> List[Dict[str, Any]]:
         """Format raw messages into the proper chat format.
-        
+
         Args:
             messages: Raw messages, can be text-only or (text, visuals) pairs
             generate: Whether this is a generation request
-            
+
         Returns:
             List of formatted message dictionaries
         """
         formatted_messages = []
-        
+
+        def encode_image(image):
+            # PIL
+            buffered = BytesIO()
+            # openai API uses JPEG for compression
+            image.save(buffered, format="JPEG")
+            return base64.b64encode(buffered.getvalue()).decode("utf-8")
+
         # Handle different message formats
         for msg in messages:
             if isinstance(msg, tuple):
                 # Handle (context, visuals) pair
                 context, visual_data = msg
                 content = []
-                
+
                 # Add text content
-                content.append({
-                    "type": "text",
-                    "text": context
-                })
-                
+                content.append({"type": "text", "text": context})
+
                 # Add image content if present
                 if visual_data and "visual" in visual_data:
                     images = visual_data["visual"]
                     if not isinstance(images, list):
                         images = [images]
-                        
+
                     # Limit number of images
-                    images = images[:self.max_images]
-                    
+                    images = images[: self.max_images]
+
                     for image in images:
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{encode_image(image)}"
+                        content.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{encode_image(image)}"
+                                },
                             }
-                        })
-                
-                formatted_messages.append({
-                    "role": "user", 
-                    "content": content
-                })
+                        )
+
+                formatted_messages.append({"role": "user", "content": content})
             elif isinstance(msg, JsonChatStr):
                 # Handle JSON-encoded chat history
                 formatted_messages.extend(json.loads(msg.prompt))
             else:
                 # Handle plain text message
-                formatted_messages.append({
-                    "role": "user",
-                    "content": str(msg)
-                })
-                
+                formatted_messages.append({"role": "user", "content": str(msg)})
+
         return formatted_messages
 
     def _create_payload(
@@ -399,14 +403,14 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
         **kwargs,
     ) -> dict:
         """Create the API payload with support for multimodal inputs.
-        
+
         Args:
             messages: Pre-formatted messages from create_message()
             generate: Whether this is a generation request
             gen_kwargs: Generation parameters
             seed: Random seed
             eos: End of sequence token
-            
+
         Returns:
             Formatted API payload
         """
@@ -414,16 +418,16 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
 
         gen_kwargs = gen_kwargs or {}
         gen_kwargs.pop("do_sample", False)
-        
+
         # Handle max tokens
         if "max_tokens" in gen_kwargs:
             max_tokens = gen_kwargs.pop("max_tokens")
         else:
             max_tokens = gen_kwargs.pop("max_gen_toks", self._max_gen_toks)
-            
+
         # Handle temperature
         temperature = gen_kwargs.pop("temperature", 0)
-        
+
         # Handle stop sequences
         stop = handle_stop_sequences(gen_kwargs.pop("until", None), eos)
         if not isinstance(stop, (list, tuple)):
@@ -438,13 +442,13 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
             "seed": seed,
             **gen_kwargs,
         }
-        
+
         # Add stop sequences if present (max 4 for OpenAI API)
         if stop and stop[0] is not None:
             payload["stop"] = stop[:4]
-            
+
         return payload
-        
+
         # Add stop sequences (max 4 as per OpenAI API)
         if stop and stop[0] is not None:
             payload["stop"] = stop[:4]
@@ -452,25 +456,23 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
         return payload
 
     def generate_until(
-        self,
-        requests: List[Instance],
-        disable_tqdm: bool = False
+        self, requests: List[Instance], disable_tqdm: bool = False
     ) -> List[str]:
         """Generate responses for text and image inputs.
-        
+
         Args:
             requests: List of Instance objects containing generation requests
             disable_tqdm: Whether to disable the progress bar
-            
+
         Returns:
             List of generated text responses
         """
         res = []
-        
+
         def _collate_gen(_requests):
             # Sort by length of contexts
             return -len(_requests[0])
-        
+
         # Extract request arguments
         request_args = []
         for req in requests:
@@ -478,57 +480,46 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
             context, gen_kwargs, visuals = req.args
             # Create tuple of context and visuals for the message formatting
             request_args.append((context, gen_kwargs, visuals))
-            
+
         # Create batches grouped by gen_kwargs
-        re_ord = Collator(
-            request_args,
-            sort_fn=_collate_gen,
-            group_by="gen_kwargs"
-        )
+        re_ord = Collator(request_args, sort_fn=_collate_gen, group_by="gen_kwargs")
         chunks = re_ord.get_batched(n=self._batch_size)
 
         # Process each batch
-        pbar = tqdm(
-            desc="Requesting API",
-            total=len(requests),
-            disable=disable_tqdm
-        )
-        
+        pbar = tqdm(desc="Requesting API", total=len(requests), disable=disable_tqdm)
+
         for chunk in chunks:
             # Unpack the chunks
             contexts, gen_kwargs, visuals = zip(*chunk)
-            
+
             # Format messages with context and visuals
             messages = list(zip(contexts, visuals))
-            
+
             # Call API
             outputs = retry(
                 stop=stop_after_attempt(self.max_retries),
                 wait=wait_exponential(multiplier=0.5, min=1, max=10),
-                reraise=True
+                reraise=True,
             )(self.model_call)(
                 messages=messages,
                 generate=True,
-                gen_kwargs=copy.deepcopy(gen_kwargs[0])  # All kwargs in batch are same
+                gen_kwargs=copy.deepcopy(gen_kwargs[0]),  # All kwargs in batch are same
             )
 
             # Process outputs
             for generated_text, context in zip(
-                self.parse_generations(outputs=outputs),
-                contexts
+                self.parse_generations(outputs=outputs), contexts
             ):
                 if generated_text is not None:
                     res.append(generated_text)
                     # Cache the result
                     self.cache_hook.add_partial(
-                        "generate_until",
-                        (context, gen_kwargs[0]),
-                        generated_text
+                        "generate_until", (context, gen_kwargs[0]), generated_text
                     )
                     pbar.update(1)
 
         pbar.close()
-        
+
         # Restore original order
         return re_ord.get_original(res)
 
@@ -538,7 +529,7 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
         res = []
         if not isinstance(outputs, list):
             outputs = [outputs]
-            
+
         for out in outputs:
             tmp = [None] * len(out["choices"])
             for choices in out["choices"]:
@@ -546,15 +537,15 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
                 if isinstance(choices["message"]["content"], list):
                     # For multimodal responses, concatenate text contents
                     text_contents = [
-                        content["text"] 
-                        for content in choices["message"]["content"] 
+                        content["text"]
+                        for content in choices["message"]["content"]
                         if content["type"] == "text"
                     ]
                     tmp[choices["index"]] = " ".join(text_contents)
                 else:
                     tmp[choices["index"]] = choices["message"]["content"]
             res.extend(tmp)
-            
+
         return res
 
     def loglikelihood(self, requests, **kwargs):
