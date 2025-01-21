@@ -3,10 +3,13 @@ from functools import cached_property
 from operator import itemgetter
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from tqdm import tqdm
+
 from lm_eval.api.registry import register_model
-from lm_eval.models.api_models import TemplateAPI
+from lm_eval.models.api_models import TemplateAPI, JsonChatStr
 from lm_eval.models.utils import handle_stop_sequences
 from lm_eval.utils import eval_logger
+from lm_eval.api.instance import Instance
 
 
 @register_model("local-completions")
@@ -222,7 +225,7 @@ class OpenAICompletionsAPI(LocalCompletionsAPI):
 
 
 @register_model("openai-chat-completions")
-class OpenAIChatCompletion(LocalChatCompletion):
+class OpenAIChatCompletion(LocalCompletionsAPI):
     def __init__(
         self,
         base_url="https://api.openai.com/v1/chat/completions",
@@ -295,125 +298,271 @@ class OpenAIChatCompletion(LocalChatCompletion):
 DEFAULT_IMAGE_PLACEHOLDER = "<image>"
 
 @register_model("local-mm-chat-completions")
-class LocalMMChatCompletion(OpenAIChatCompletion):
+class LocalMMChatCompletion(LocalCompletionsAPI):
+    """Local Chat Completions API implementation with multimodal support."""
     MULTIMODAL = True
-    
+
     def __init__(
         self,
         base_url=None,
         tokenizer_backend=None,
         tokenized_requests=False,
-        max_images: int = 999,
-        interleave: bool = True,
-        processor_name: Optional[str] = None,
+        max_images=999,  # Matches VLLM_VLM default
         **kwargs,
     ):
+        eval_logger.warning(
+            "chat-completions endpoint requires the `--apply_chat_template` flag."
+        )
         super().__init__(
             base_url=base_url,
             tokenizer_backend=tokenizer_backend,
             tokenized_requests=tokenized_requests,
             **kwargs,
         )
-        self.max_images = max_images
-        self.interleave = interleave
-        self.chat_applied = False
         
-        # Initialize the processor for handling images
-        # if processor_name is None:
-        #     processor_name = self.model
-        # self.processor = transformers.AutoProcessor.from_pretrained(
-        #     processor_name,
-        #     trust_remote_code=True,
-        # )
+        self.max_images = max_images
+        if self._batch_size > 1:
+            eval_logger.warning(
+                "Chat completions does not support batching. Defaulting to batch size 1."
+            )
+            self._batch_size = 1
+
+    def create_message(
+        self,
+        messages: Union[List[Tuple[str, Dict[str, Any]]], List[str], List[JsonChatStr]],
+        generate: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Format raw messages into the proper chat format.
+        
+        Args:
+            messages: Raw messages, can be text-only or (text, visuals) pairs
+            generate: Whether this is a generation request
+            
+        Returns:
+            List of formatted message dictionaries
+        """
+        formatted_messages = []
+        
+        # Handle different message formats
+        for msg in messages:
+            if isinstance(msg, tuple):
+                # Handle (context, visuals) pair
+                context, visual_data = msg
+                content = []
+                
+                # Add text content
+                content.append({
+                    "type": "text",
+                    "text": context
+                })
+                
+                # Add image content if present
+                if visual_data and "visual" in visual_data:
+                    images = visual_data["visual"]
+                    if not isinstance(images, list):
+                        images = [images]
+                        
+                    # Limit number of images
+                    images = images[:self.max_images]
+                    
+                    for image in images:
+                        content.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{encode_image(image)}"
+                            }
+                        })
+                
+                formatted_messages.append({
+                    "role": "user", 
+                    "content": content
+                })
+            elif isinstance(msg, JsonChatStr):
+                # Handle JSON-encoded chat history
+                formatted_messages.extend(json.loads(msg.prompt))
+            else:
+                # Handle plain text message
+                formatted_messages.append({
+                    "role": "user",
+                    "content": str(msg)
+                })
+                
+        return formatted_messages
 
     def _create_payload(
         self,
-        messages: List[Dict],
-        generate=False,
+        messages: List[Dict[str, Any]],
+        generate: bool = False,
         gen_kwargs: dict = None,
-        seed=1234,
-        eos=None,
+        seed: int = 1234,
+        eos: str = None,
         **kwargs,
     ) -> dict:
-        if "visual" in kwargs:
-            # Handle multimodal input
-            messages = self._process_multimodal_messages(messages, kwargs["visual"])
+        """Create the API payload with support for multimodal inputs.
+        
+        Args:
+            messages: Pre-formatted messages from create_message()
+            generate: Whether this is a generation request
+            gen_kwargs: Generation parameters
+            seed: Random seed
+            eos: End of sequence token
             
-        # Call parent class's _create_payload with processed messages
-        return super()._create_payload(
-            messages=messages,
-            generate=generate,
-            gen_kwargs=gen_kwargs,
-            seed=seed,
-            eos=eos,
-            **kwargs
-        )
+        Returns:
+            Formatted API payload
+        """
+        assert messages, "No messages provided"
 
-    def _process_multimodal_messages(
+        gen_kwargs = gen_kwargs or {}
+        gen_kwargs.pop("do_sample", False)
+        
+        # Handle max tokens
+        if "max_tokens" in gen_kwargs:
+            max_tokens = gen_kwargs.pop("max_tokens")
+        else:
+            max_tokens = gen_kwargs.pop("max_gen_toks", self._max_gen_toks)
+            
+        # Handle temperature
+        temperature = gen_kwargs.pop("temperature", 0)
+        
+        # Handle stop sequences
+        stop = handle_stop_sequences(gen_kwargs.pop("until", None), eos)
+        if not isinstance(stop, (list, tuple)):
+            stop = [stop]
+
+        # Create the payload
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "seed": seed,
+            **gen_kwargs,
+        }
+        
+        # Add stop sequences if present (max 4 for OpenAI API)
+        if stop and stop[0] is not None:
+            payload["stop"] = stop[:4]
+            
+        return payload
+        
+        # Add stop sequences (max 4 as per OpenAI API)
+        if stop and stop[0] is not None:
+            payload["stop"] = stop[:4]
+
+        return payload
+
+    def generate_until(
         self,
-        messages: List[Dict],
-        images: List[List[str]],  # List of lists of image data for each message
-    ) -> List[Dict]:
-        """Process messages to include image data in the expected format."""
-        processed_messages = []
-        breakpoint()
-        for msg, img_list in zip(messages, images):
-            if not isinstance(msg["content"], str):
-                # Already processed message
-                processed_messages.append(msg)
-                continue
-                
-            content = msg["content"]
-            if not self.chat_applied:
-                content = replace_placeholders(
-                    content,
-                    DEFAULT_IMAGE_PLACEHOLDER,
-                    DEFAULT_IMAGE_PLACEHOLDER,
-                    self.max_images,
-                )
+        requests: List[Instance],
+        disable_tqdm: bool = False
+    ) -> List[str]:
+        """Generate responses for text and image inputs.
+        
+        Args:
+            requests: List of Instance objects containing generation requests
+            disable_tqdm: Whether to disable the progress bar
             
-            # Process content based on interleave setting
-            if not self.interleave:
-                # Add all images first, then text
-                c = []
-                image_count = min(self.max_images, content.count(DEFAULT_IMAGE_PLACEHOLDER))
-                content = content.replace(DEFAULT_IMAGE_PLACEHOLDER, "")
-                
-                # Add image entries
-                for img in img_list[:image_count]:
-                    c.append({"type": "image", "image": img})
-                
-                # Add text entry
-                if content.strip():
-                    c.append({"type": "text", "text": content})
-                    
-            else:
-                # Interleave images and text
-                c = []
-                text_parts = content.split(DEFAULT_IMAGE_PLACEHOLDER)
-                img_idx = 0
-                
-                for i, part in enumerate(text_parts):
-                    if part.strip():
-                        c.append({"type": "text", "text": part})
-                    if i < len(text_parts) - 1 and img_idx < len(img_list) and img_idx < self.max_images:
-                        c.append({"type": "image", "image": img_list[img_idx]})
-                        img_idx += 1
-
-            # Create new message with processed content
-            new_msg = msg.copy()
-            new_msg["content"] = c
-            processed_messages.append(new_msg)
+        Returns:
+            List of generated text responses
+        """
+        res = []
+        
+        def _collate_gen(_requests):
+            # Sort by length of contexts
+            return -len(_requests[0])
+        
+        # Extract request arguments
+        request_args = []
+        for req in requests:
+            # Each req.args should be (context, gen_kwargs, visuals)
+            context, gen_kwargs, visuals = req.args
+            # Create tuple of context and visuals for the message formatting
+            request_args.append((context, gen_kwargs, visuals))
             
-        return processed_messages
-
-    def apply_chat_template(
-        self, chat_history: List[Dict[str, str]], add_generation_prompt=True
-    ) -> str:
-        """Apply chat template with support for multimodal content."""
-        self.chat_applied = True
-        return self.processor.apply_chat_template(
-            chat_history,
-            add_generation_prompt=add_generation_prompt,
-            continue_final_message=not add_generation_prompt,
+        # Create batches grouped by gen_kwargs
+        re_ord = Collator(
+            request_args,
+            sort_fn=_collate_gen,
+            group_by="gen_kwargs"
         )
+        chunks = re_ord.get_batched(n=self._batch_size)
+
+        # Process each batch
+        pbar = tqdm(
+            desc="Requesting API",
+            total=len(requests),
+            disable=disable_tqdm
+        )
+        
+        for chunk in chunks:
+            # Unpack the chunks
+            contexts, gen_kwargs, visuals = zip(*chunk)
+            
+            # Format messages with context and visuals
+            messages = list(zip(contexts, visuals))
+            
+            # Call API
+            outputs = retry(
+                stop=stop_after_attempt(self.max_retries),
+                wait=wait_exponential(multiplier=0.5, min=1, max=10),
+                reraise=True
+            )(self.model_call)(
+                messages=messages,
+                generate=True,
+                gen_kwargs=copy.deepcopy(gen_kwargs[0])  # All kwargs in batch are same
+            )
+
+            # Process outputs
+            for generated_text, context in zip(
+                self.parse_generations(outputs=outputs),
+                contexts
+            ):
+                if generated_text is not None:
+                    res.append(generated_text)
+                    # Cache the result
+                    self.cache_hook.add_partial(
+                        "generate_until",
+                        (context, gen_kwargs[0]),
+                        generated_text
+                    )
+                    pbar.update(1)
+
+        pbar.close()
+        
+        # Restore original order
+        return re_ord.get_original(res)
+
+    @staticmethod
+    def parse_generations(outputs: Union[Dict, List[Dict]], **kwargs) -> List[str]:
+        """Parse generation outputs from the API response."""
+        res = []
+        if not isinstance(outputs, list):
+            outputs = [outputs]
+            
+        for out in outputs:
+            tmp = [None] * len(out["choices"])
+            for choices in out["choices"]:
+                # Extract the text content from the message
+                if isinstance(choices["message"]["content"], list):
+                    # For multimodal responses, concatenate text contents
+                    text_contents = [
+                        content["text"] 
+                        for content in choices["message"]["content"] 
+                        if content["type"] == "text"
+                    ]
+                    tmp[choices["index"]] = " ".join(text_contents)
+                else:
+                    tmp[choices["index"]] = choices["message"]["content"]
+            res.extend(tmp)
+            
+        return res
+
+    def loglikelihood(self, requests, **kwargs):
+        raise NotImplementedError(
+            "Loglikelihood is not supported for chat completions with images. "
+            "Consider using the completions API instead."
+        )
+
+    def chat_template(self, chat_template: Union[bool, str] = False) -> Optional[str]:
+        """Return empty string as chat template is handled by the API."""
+        return ""
