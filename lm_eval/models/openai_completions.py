@@ -1,11 +1,13 @@
+import asyncio
+import base64
 import copy
+import itertools
 import json
 import os
 from functools import cached_property
+from io import BytesIO
 from operator import itemgetter
 from typing import Any, Dict, List, Optional, Tuple, Union
-from io import BytesIO
-import base64
 
 # from PIL import Image
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -458,7 +460,7 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
     def generate_until(
         self, requests: List[Instance], disable_tqdm: bool = False
     ) -> List[str]:
-        """Generate responses for text and image inputs.
+        """Generate responses for text and image inputs with support for concurrent requests.
 
         Args:
             requests: List of Instance objects containing generation requests
@@ -478,47 +480,77 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
         for req in requests:
             # Each req.args should be (context, gen_kwargs, visuals)
             context, gen_kwargs, visuals = req.args
-            # Create tuple of context and visuals for the message formatting
+            # Create tuple of context and visuals for message formatting
             request_args.append((context, gen_kwargs, visuals))
 
         # Create batches grouped by gen_kwargs
-        re_ord = Collator(request_args, sort_fn=_collate_gen, group_by="gen_kwargs")
-        chunks = re_ord.get_batched(n=self._batch_size)
+        re_ord = Collator(
+            request_args,
+            sort_fn=_collate_gen,
+            group_by="gen_kwargs",
+        )
+        chunked = re_ord.get_batched(
+            n=self._batch_size if self._concurrent <= 1 else 0, batch_fn=None
+        )
 
-        # Process each batch
-        pbar = tqdm(desc="Requesting API", total=len(requests), disable=disable_tqdm)
-
-        for chunk in chunks:
-            # Unpack the chunks
-            contexts, gen_kwargs, visuals = zip(*chunk)
-
-            # Format messages with context and visuals
-            messages = list(zip(contexts, visuals))
-
-            # Call API
-            outputs = retry(
-                stop=stop_after_attempt(self.max_retries),
-                wait=wait_exponential(multiplier=0.5, min=1, max=10),
-                reraise=True,
-            )(self.model_call)(
-                messages=messages,
-                generate=True,
-                gen_kwargs=copy.deepcopy(gen_kwargs[0]),  # All kwargs in batch are same
+        if self._concurrent <= 1:
+            # Single concurrent request handling
+            pbar = tqdm(
+                desc="Requesting API", total=len(requests), disable=disable_tqdm
             )
+            for chunk in chunked:
+                contexts, gen_kwargs, visuals = zip(*chunk)
 
-            # Process outputs
-            for generated_text, context in zip(
-                self.parse_generations(outputs=outputs), contexts
-            ):
-                if generated_text is not None:
-                    res.append(generated_text)
-                    # Cache the result
-                    self.cache_hook.add_partial(
-                        "generate_until", (context, gen_kwargs[0]), generated_text
+                # Format messages with context and visuals
+                messages = list(zip(contexts, visuals))
+
+                # Call API
+                outputs = retry(
+                    stop=stop_after_attempt(self.max_retries),
+                    wait=wait_exponential(multiplier=0.5, min=1, max=10),
+                    reraise=True,
+                )(self.model_call)(
+                    messages=messages,
+                    generate=True,
+                    gen_kwargs=copy.deepcopy(gen_kwargs[0]),
+                )
+
+                # Process outputs
+                for generated_text, context in zip(
+                    self.parse_generations(outputs=outputs),
+                    contexts,
+                ):
+                    if generated_text is not None:
+                        res.append(generated_text)
+                        # Cache the result
+                        self.cache_hook.add_partial(
+                            "generate_until",
+                            (context, gen_kwargs[0]),
+                            generated_text,
+                        )
+                        pbar.update(1)
+
+            pbar.close()
+        else:
+            # Multiple concurrent requests handling
+            for chunk in chunked:
+                contexts, gen_kwargs, visuals = zip(*chunk)
+
+                # Format messages with context and visuals
+                messages = list(zip(contexts, visuals))
+
+                # Run concurrent requests using asyncio
+                results = itertools.chain.from_iterable(
+                    asyncio.run(
+                        self.get_batched_requests(
+                            messages,
+                            cache_keys=[(ctx, gen_kwargs[0]) for ctx in contexts],
+                            generate=True,
+                            gen_kwargs=copy.deepcopy(gen_kwargs[0]),
+                        )
                     )
-                    pbar.update(1)
-
-        pbar.close()
+                )
+                res.extend(results)
 
         # Restore original order
         return re_ord.get_original(res)
