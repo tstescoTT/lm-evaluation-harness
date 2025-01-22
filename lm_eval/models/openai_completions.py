@@ -9,7 +9,7 @@ from io import BytesIO
 from operator import itemgetter
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-# from PIL import Image
+from PIL import Image
 from tenacity import retry, stop_after_attempt, wait_exponential
 from tqdm import tqdm
 
@@ -313,7 +313,7 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
         base_url=None,
         tokenizer_backend=None,
         tokenized_requests=False,
-        max_images=999,  # Matches VLLM_VLM default
+        max_images=1,
         **kwargs,
     ):
         eval_logger.warning(
@@ -350,8 +350,16 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
         formatted_messages = []
 
         def encode_image(image):
-            # PIL
             buffered = BytesIO()
+            if image.mode == 'RGBA':
+                # Create a white background image
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                # Paste the image on the background using alpha channel 
+                background.paste(image, mask=image.split()[3])
+                image = background
+            elif image.mode != 'RGB':
+                # Convert any other modes to RGB
+                image = image.convert('RGB')
             # openai API uses JPEG for compression
             image.save(buffered, format="JPEG")
             return base64.b64encode(buffered.getvalue()).decode("utf-8")
@@ -538,7 +546,6 @@ class LocalMMChatCompletion(LocalCompletionsAPI):
 
                 # Format messages with context and visuals
                 messages = list(zip(contexts, visuals))
-
                 # Run concurrent requests using asyncio
                 results = itertools.chain.from_iterable(
                     asyncio.run(
