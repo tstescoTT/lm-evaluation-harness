@@ -149,8 +149,6 @@ class LocalChatCompletion(LocalCompletionsAPI):
         stop = handle_stop_sequences(gen_kwargs.pop("until", None), eos)
         if not isinstance(stop, (list, tuple)):
             stop = [stop]
-        # Filter out max_new_tokens to prevent API compatibility issues
-        gen_kwargs.pop("max_new_tokens", None)
         return {
             "messages": messages,
             "model": self.model,
