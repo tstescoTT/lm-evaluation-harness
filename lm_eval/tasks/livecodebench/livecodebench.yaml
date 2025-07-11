@@ -1,5 +1,5 @@
 task: livecodebench
-dataset_path: json
+dataset_path: livecodebench/code_generation_lite
 dataset_kwargs:
   data_files:
     test:
