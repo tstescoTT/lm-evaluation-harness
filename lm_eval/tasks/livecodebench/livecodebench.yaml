@@ -1,6 +1,7 @@
 task: livecodebench
 dataset_path: json
-data_files:
+dataset_kwargs:
+  data_files:
     test:
       - "hf://datasets/livecodebench/code_generation_lite/test.jsonl"
       - "hf://datasets/livecodebench/code_generation_lite/test2.jsonl"
