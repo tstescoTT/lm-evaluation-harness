@@ -2,7 +2,6 @@ task: livecodebench
 dataset_path: livecodebench/code_generation_lite
 dataset_kwargs:
   version_tag: "release_v6"
-  trust_remote_code: true
 output_type: generate_until
 validation_split: test
 doc_to_text: !function utils.doc_to_text_with_format
