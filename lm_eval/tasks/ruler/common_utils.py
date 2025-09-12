@@ -61,8 +61,9 @@ def string_match_part(preds: list[str], refs: list[list[str]]) -> float:
 
 
 def process_results(doc: dict, results: list[str]) -> dict[str, float]:
-    # hacky: set all other lengths to -1
-    metrics = {str(length): -1.0 for length in DEFAULT_SEQ_LENGTHS}
+    # Use max_seq_lengths from metadata if available, fallback to DEFAULT_SEQ_LENGTHS
+    seq_lengths = doc.get("max_seq_lengths", DEFAULT_SEQ_LENGTHS)
+    metrics = {str(length): -1.0 for length in seq_lengths}
     input_len = doc["max_length"]
     pred = postprocess_pred(results)
     score = string_match_all(pred, [doc["outputs"]])
@@ -71,8 +72,9 @@ def process_results(doc: dict, results: list[str]) -> dict[str, float]:
 
 
 def process_results_part(doc: dict, results: list[str]) -> dict[str, float]:
-    # hacky: set all other lengths to -1
-    metrics = {str(length): -1.0 for length in DEFAULT_SEQ_LENGTHS}
+    # Use max_seq_lengths from metadata if available, fallback to DEFAULT_SEQ_LENGTHS
+    seq_lengths = doc.get("max_seq_lengths", DEFAULT_SEQ_LENGTHS)
+    metrics = {str(length): -1.0 for length in seq_lengths}
     input_len = doc["max_length"]
     pred = postprocess_pred(results)
     score = string_match_part(pred, [doc["outputs"]])

@@ -166,18 +166,19 @@ def sys_word_pair_random(
     return write_jsons
 
 
-def get_dataset(pretrained, seq=None, **kwargs):
+def get_dataset(pretrained, seq=None, num_samples=500, **kwargs):
     tokenizer = get_tokenizer(pretrained)
     write_jsons = sys_word_pair_random(
-        num_samples=500, max_seq_length=seq, tokenizer=tokenizer
+        num_samples=num_samples, max_seq_length=seq, tokenizer=tokenizer
     )
     return write_jsons
 
 
 def get_cw_dataset(**kwargs):
     pretrained = kwargs.get("tokenizer", kwargs.get("pretrained", {}))
+    num_samples = kwargs.pop("num_samples_per_length", 500)  # Allow configurable sample count
     df = (
-        get_dataset(pretrained, seq=seq)
+        get_dataset(pretrained, seq=seq, num_samples=num_samples)
         for seq in kwargs.pop("max_seq_lengths", DEFAULT_SEQ_LENGTHS)
     )
 
