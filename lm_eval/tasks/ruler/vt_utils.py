@@ -23,7 +23,7 @@ import datasets
 import numpy as np
 from tqdm import tqdm
 
-from lm_eval.tasks.ruler.common_utils import DEFAULT_SEQ_LENGTHS, get_tokenizer
+from lm_eval.tasks.ruler.common_utils import DEFAULT_SEQ_LENGTHS, get_tokenizer, get_limit_factor
 
 
 if TYPE_CHECKING:
@@ -245,7 +245,9 @@ def get_dataset(
 
 def get_vt_dataset(**kwargs) -> dict[str, datasets.Dataset]:
     pretrained = kwargs.get("tokenizer", kwargs.get("pretrained", ""))
-    num_samples = kwargs.pop("num_samples_per_length", 500)  # Allow configurable sample count
+    base_samples = kwargs.pop("num_samples_per_length", 500)  # Base sample count
+    limit_factor = get_limit_factor(kwargs)
+    num_samples = int(base_samples * limit_factor)  # Apply limit per sequence length
     df = (
         get_dataset(tokenizer=get_tokenizer(pretrained), seq=seq, num_samples=num_samples)
         for seq in kwargs.pop("max_seq_lengths", DEFAULT_SEQ_LENGTHS)

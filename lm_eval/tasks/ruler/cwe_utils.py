@@ -18,7 +18,7 @@ import datasets
 import wonderwords
 from tqdm import tqdm
 
-from lm_eval.tasks.ruler.common_utils import DEFAULT_SEQ_LENGTHS, get_tokenizer
+from lm_eval.tasks.ruler.common_utils import DEFAULT_SEQ_LENGTHS, get_tokenizer, get_limit_factor
 
 
 CONFIG = {
@@ -176,7 +176,9 @@ def get_dataset(pretrained, seq=None, num_samples=500, **kwargs):
 
 def get_cw_dataset(**kwargs):
     pretrained = kwargs.get("tokenizer", kwargs.get("pretrained", {}))
-    num_samples = kwargs.pop("num_samples_per_length", 500)  # Allow configurable sample count
+    base_samples = kwargs.pop("num_samples_per_length", 500)  # Base sample count
+    limit_factor = get_limit_factor(kwargs)
+    num_samples  = int(base_samples * limit_factor)
     df = (
         get_dataset(pretrained, seq=seq, num_samples=num_samples)
         for seq in kwargs.pop("max_seq_lengths", DEFAULT_SEQ_LENGTHS)

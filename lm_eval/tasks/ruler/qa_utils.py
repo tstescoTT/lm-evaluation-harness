@@ -21,7 +21,7 @@ import datasets
 import requests
 from tqdm import tqdm
 
-from lm_eval.tasks.ruler.common_utils import DEFAULT_SEQ_LENGTHS, get_tokenizer
+from lm_eval.tasks.ruler.common_utils import DEFAULT_SEQ_LENGTHS, get_tokenizer, get_limit_factor
 
 CONFIG = {
     "tokens_to_generate": 32,
@@ -216,7 +216,9 @@ def get_dataset(pretrained, docs, qas, max_seq_length=None, num_samples=500, **k
 
 def get_qa_dataset(ds, **kwargs) -> dict[str, datasets.Dataset]:
     pretrained = kwargs.get("tokenizer", kwargs.get("pretrained", {}))
-    num_samples = kwargs.pop("num_samples_per_length", 500)  # Allow configurable sample count
+    base_samples = kwargs.pop("num_samples_per_length", 500)  # Base sample count
+    limit_factor = get_limit_factor(kwargs)
+    num_samples = int(base_samples * limit_factor)  # Apply limit per sequence length
     if ds == "squad":
         qas, docs = read_squad()
     else:

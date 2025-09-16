@@ -4,7 +4,7 @@ from typing import Generator
 
 import datasets
 
-from lm_eval.tasks.ruler.common_utils import DEFAULT_SEQ_LENGTHS, get_tokenizer
+from lm_eval.tasks.ruler.common_utils import DEFAULT_SEQ_LENGTHS, get_tokenizer, get_limit_factor
 from lm_eval.tasks.ruler.prepare_niah import generate_samples, get_haystack
 
 
@@ -22,7 +22,9 @@ def download_dataset(df: Generator) -> dict[str, datasets.Dataset]:
 
 def niah_single_1(**kwargs):
     seq_lengths = kwargs.pop("max_seq_lengths", DEFAULT_SEQ_LENGTHS)
-    num_samples = kwargs.pop("num_samples_per_length", 500)  # Allow configurable sample count
+    base_samples = kwargs.pop("num_samples_per_length", 500)
+    limit_factor = get_limit_factor(kwargs)
+    num_samples = int(base_samples * limit_factor)
     return download_dataset(
         generate_samples(
             get_haystack(type_haystack="repeat"),
@@ -40,7 +42,9 @@ def niah_single_1(**kwargs):
 
 def niah_single_2(**kwargs):
     seq_lengths = kwargs.pop("max_seq_lengths", DEFAULT_SEQ_LENGTHS)
-    num_samples = kwargs.pop("num_samples_per_length", 500)  # Allow configurable sample count
+    base_samples = kwargs.pop("num_samples_per_length", 500)
+    limit_factor = get_limit_factor(kwargs)
+    num_samples = int(base_samples * limit_factor)
     return download_dataset(
         generate_samples(
             get_haystack(type_haystack="essay"),
@@ -58,7 +62,9 @@ def niah_single_2(**kwargs):
 
 def niah_single_3(**kwargs):
     seq_lengths = kwargs.pop("max_seq_lengths", DEFAULT_SEQ_LENGTHS)
-    num_samples = kwargs.pop("num_samples_per_length", 500)  # Allow configurable sample count
+    base_samples = kwargs.pop("num_samples_per_length", 500)
+    limit_factor = get_limit_factor(kwargs)
+    num_samples = int(base_samples * limit_factor)
     return download_dataset(
         generate_samples(
             get_haystack(type_haystack="essay"),
@@ -76,7 +82,9 @@ def niah_single_3(**kwargs):
 
 def niah_multikey_1(**kwargs):
     seq_lengths = kwargs.pop("max_seq_lengths", DEFAULT_SEQ_LENGTHS)
-    num_samples = kwargs.pop("num_samples_per_length", 500)  # Allow configurable sample count
+    base_samples = kwargs.pop("num_samples_per_length", 500)
+    limit_factor = get_limit_factor(kwargs)
+    num_samples = int(base_samples * limit_factor)
     return download_dataset(
         generate_samples(
             get_haystack(type_haystack="essay"),
@@ -95,7 +103,9 @@ def niah_multikey_1(**kwargs):
 
 def niah_multikey_2(**kwargs):
     seq_lengths = kwargs.pop("max_seq_lengths", DEFAULT_SEQ_LENGTHS)
-    num_samples = kwargs.pop("num_samples_per_length", 500)  # Allow configurable sample count
+    base_samples = kwargs.pop("num_samples_per_length", 500)
+    limit_factor = get_limit_factor(kwargs)
+    num_samples = int(base_samples * limit_factor)
     return download_dataset(
         generate_samples(
             get_haystack(type_haystack="needle"),
@@ -113,7 +123,9 @@ def niah_multikey_2(**kwargs):
 
 def niah_multikey_3(**kwargs):
     seq_lengths = kwargs.pop("max_seq_lengths", DEFAULT_SEQ_LENGTHS)
-    num_samples = kwargs.pop("num_samples_per_length", 500)  # Allow configurable sample count
+    base_samples = kwargs.pop("num_samples_per_length", 500)
+    limit_factor = get_limit_factor(kwargs)
+    num_samples = int(base_samples * limit_factor)
     return download_dataset(
         generate_samples(
             get_haystack(type_haystack="needle"),
@@ -131,7 +143,9 @@ def niah_multikey_3(**kwargs):
 
 def niah_multivalue(**kwargs):
     seq_lengths = kwargs.pop("max_seq_lengths", DEFAULT_SEQ_LENGTHS)
-    num_samples = kwargs.pop("num_samples_per_length", 500)  # Allow configurable sample count
+    base_samples = kwargs.pop("num_samples_per_length", 500)
+    limit_factor = get_limit_factor(kwargs)
+    num_samples = int(base_samples * limit_factor)
     return download_dataset(
         generate_samples(
             get_haystack(type_haystack="essay"),
@@ -150,7 +164,9 @@ def niah_multivalue(**kwargs):
 
 def niah_multiquery(**kwargs):
     seq_lengths = kwargs.pop("max_seq_lengths", DEFAULT_SEQ_LENGTHS)
-    num_samples = kwargs.pop("num_samples_per_length", 500)  # Allow configurable sample count
+    base_samples = kwargs.pop("num_samples_per_length", 500)
+    limit_factor = get_limit_factor(kwargs)
+    num_samples = int(base_samples * limit_factor)
     return download_dataset(
         generate_samples(
             get_haystack(type_haystack="essay"),
