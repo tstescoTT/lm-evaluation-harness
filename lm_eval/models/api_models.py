@@ -77,7 +77,7 @@ class TemplateAPI(TemplateLM):
         # send the requests as tokens or strings
         tokenized_requests=True,
         # timeout in seconds
-        timeout: int = 3600,
+        timeout: int = 300,
         **kwargs,
     ) -> None:
         super().__init__()
