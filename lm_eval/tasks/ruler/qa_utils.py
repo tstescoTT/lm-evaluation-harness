@@ -76,7 +76,41 @@ def read_squad(
 def read_hotpotqa(
     url="http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_dev_distractor_v1.json",
 ) -> tuple[list[dict], list[str]]:
-    data = download_json(url)
+    """
+    Read HotpotQA dataset with fallback to HuggingFace datasets for CI environments.
+    
+    First attempts to download from the original CMU URL. If that fails (e.g., due to
+    network restrictions in CI), falls back to loading from HuggingFace datasets.
+    """
+    try:
+        # Try original URL first
+        data = download_json(url)
+        print(f"Successfully loaded HotpotQA from original URL: {url}")
+    except Exception as e:
+        print(f"Failed to download HotpotQA from original URL ({e}), falling back to HuggingFace datasets")
+        
+        try:
+            # Fallback to HuggingFace datasets
+            dataset = datasets.load_dataset("hotpot_qa", "distractor", split="validation")
+            
+            # Convert HuggingFace dataset to expected format
+            data = []
+            for item in dataset:
+                data.append({
+                    "id": item["id"],
+                    "question": item["question"],
+                    "answer": item["answer"],
+                    "supporting_facts": item["supporting_facts"],
+                    "context": item["context"]
+                })
+            
+            print(f"Successfully loaded {len(data)} samples from HuggingFace datasets")
+            
+        except Exception as hf_error:
+            raise Exception(f"Both original URL and HuggingFace fallback failed. "
+                          f"Original error: {e}. HuggingFace error: {hf_error}")
+    
+    # Process data into expected format (same logic as before)
     total_docs = [f"{t}\n{''.join(p)}" for d in data for t, p in d["context"]]
     total_docs = sorted(list(set(total_docs)))
     total_docs_dict = {c: idx for idx, c in enumerate(total_docs)}
