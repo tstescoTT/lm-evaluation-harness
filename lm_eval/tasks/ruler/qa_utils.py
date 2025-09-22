@@ -96,12 +96,21 @@ def read_hotpotqa(
             # Convert HuggingFace dataset to expected format
             data = []
             for item in dataset:
+                # HuggingFace format: context = {'title': [...], 'sentences': [[...], [...]]}
+                # Original format: context = [[title, sentences], [title, sentences], ...]
+                context_converted = []
+                titles = item["context"]["title"]
+                sentences = item["context"]["sentences"]
+                
+                for title, sentence_list in zip(titles, sentences):
+                    context_converted.append([title, sentence_list])
+                
                 data.append({
                     "id": item["id"],
                     "question": item["question"],
                     "answer": item["answer"],
                     "supporting_facts": item["supporting_facts"],
-                    "context": item["context"]
+                    "context": context_converted
                 })
             
             print(f"Successfully loaded {len(data)} samples from HuggingFace datasets")
