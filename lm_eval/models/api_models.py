@@ -134,7 +134,7 @@ class TemplateAPI(TemplateLM):
         verify_certificate: bool = True,
         eos_string: str = None,
         # timeout in seconds
-        timeout: int = 1800,
+        timeout: int = 3600,
         header: Optional[Dict[str, str]] = None,
         max_images: int = 1,
         **kwargs,
