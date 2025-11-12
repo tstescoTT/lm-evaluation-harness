@@ -1,8 +1,8 @@
-# Task-name
+# Task-name: RULER (Standard)
 
 ### Paper
 
-Title: `RULER: What’s the Real Context Size of Your Long-Context Language Models?`
+Title: `RULER: What's the Real Context Size of Your Long-Context Language Models?`
 
 Abstract: `https://arxiv.org/abs/2404.06654`
 
@@ -11,10 +11,14 @@ Abstract: `https://arxiv.org/abs/2404.06654`
 Homepage: `https://github.com/NVIDIA/RULER`
 
 > [!NOTE]
+> This is the standard `ruler` task with **all 13 subtasks** testing up to **65K context**. Optimized for N300 hardware.
+> For 128K context testing on T3K hardware, use the `ruler_long` variant (7 core subtasks).
+
+> [!NOTE]
 > When using Ruler tasks, please note:
 > 1. A tokenizer is required for data processing. The system will use the `tokenizer` from model_args, or fall back to the tokenizer associated with the `pretrained` model name.
 > 2. The default maximum sequence length is 4096. For calculating metrics of different max seq lengths, specify additional lengths using the metadata parameter:
->   `--metadata='{"max_seq_lengths":[4096,8192,16384,32768,65536,131072]}'`. The metadata parameter can also be passed to the TaskManager (metadata: dict).
+>   `--metadata='{"max_seq_lengths":[4096,8192,16384,32768,65536]}'`. The metadata parameter can also be passed to the TaskManager (metadata: dict).
 > 3. To prevent truncation of longer sequences, we recommend setting the max_length parameter in model_args:
 >   `--model_args=pretrained=...,max_length=32768`
 
@@ -33,7 +37,7 @@ Homepage: `https://github.com/NVIDIA/RULER`
 
 #### Groups
 
-* `ruler`: `All 13 tasks in the RULER benchmark`
+* `ruler`: `RULER benchmark with max 64K context support (streamlined to 7 core subtasks)`
 
 #### Tags
 
@@ -42,17 +46,15 @@ Homepage: `https://github.com/NVIDIA/RULER`
 #### Tasks
 
 * `niah_single_1`: `NIAH single needle; key=word,value=number,haystack=repeat ∼passkey retrieval`
-* `niah_single_2`: `NIAH single needle; key=word,value=number,haystack=essay ∼vanilla NIAH`
-* `niah_single_3`: `NIAH single needle; key=word,value=uuid,haystack=essay`
+<!-- * `niah_single_2`: `NIAH single needle; key=word,value=number,haystack=essay ∼vanilla NIAH`
+* `niah_single_3`: `NIAH single needle; key=word,value=uuid,haystack=essay` -->
 * `niah_multikey_1`: `NIAH multi-key, ∼line retrieval`
-* `niah_multikey_2`: `NIAH multi-key, ∼KV retrieval`
-* `niah_multikey_3`: `NIAH multi-key, `
 * `niah_multiquery`: `NIA multi-query`
-* `niah_multivalue`: `NIAH multi-value`
+<!-- * `niah_multivalue`: `NIAH multi-value` -->
 * `ruler_vt`: `Variation tracing`
 * `ruler_cwe`: `Common word extraction`
 * `ruler_fwe`: `Frequent word extraction`
-* `ruler_qa_hotpot`: `QA Hotpot`
+<!-- * `ruler_qa_hotpot`: `QA Hotpot` -->
 * `ruler_qa_squad`: `QA SQuADv2`
 
 ### Checklist
