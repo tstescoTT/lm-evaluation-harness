@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 eval_logger = logging.getLogger(__name__)
 
 DEFAULT_SEQ_LENGTHS = [
-    4096, 8192, 16384, 32768, 65536,
+    4096, 8192, 16384, 32768, 65536, 131072,
 ]
 
 
