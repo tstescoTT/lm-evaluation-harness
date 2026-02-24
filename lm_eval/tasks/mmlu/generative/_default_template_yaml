@@ -16,17 +16,25 @@ metric_list:
     higher_is_better: true
     ignore_punctuation: true
     ignore_case: true
+# filter_list:
+#   - name: get_response
+#     filter:
+#       # Filter everything after the first break line
+#       - function: "regex"
+#         regex_pattern: "^(.*?)(?=\\n|$)"
+#       # Remove leading white spaces
+#       - function: remove_whitespace
+#       # function to ignore right white spaces or line breaks
+#       - function: "regex"
+#         regex_pattern: "^(.*?)\\s*$"
+#       - function: take_first
 filter_list:
   - name: get_response
     filter:
-      # Filter everything after the first break line
       - function: "regex"
-        regex_pattern: "^(.*?)(?=\\n|$)"
-      # Remove leading white spaces
-      - function: remove_whitespace
-      # function to ignore right white spaces or line breaks
-      - function: "regex"
-        regex_pattern: "^(.*?)\\s*$"
-      - function: take_first
+        # [\s\S]* greedily matches all characters and newlines.
+        # \b([A-D])\b looks for the last standalone A, B, C, or D.
+        regex_pattern: "[\\s\\S]*\\b([A-D])\\b"
+        group: 1
 metadata:
   version: 3.0
