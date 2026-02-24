@@ -32,8 +32,6 @@ filter_list:
   - name: get_response
     filter:
       - function: "regex"
-        # [\s\S]* greedily matches all characters and newlines.
-        # \b([A-D])\b looks for the last standalone A, B, C, or D.
-        regex_pattern: "[\\s\\S]*\\b([A-D])\\b"
+        regex_pattern: ".*\\b([A-D])\\b"
 metadata:
   version: 3.0
