@@ -35,6 +35,5 @@ filter_list:
         # [\s\S]* greedily matches all characters and newlines.
         # \b([A-D])\b looks for the last standalone A, B, C, or D.
         regex_pattern: "[\\s\\S]*\\b([A-D])\\b"
-        group: 1
 metadata:
   version: 3.0
