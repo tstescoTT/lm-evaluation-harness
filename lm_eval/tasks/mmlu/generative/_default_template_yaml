@@ -28,11 +28,5 @@ filter_list:
       - function: "regex"
         regex_pattern: "^(.*?)\\s*$"
       - function: take_first
-# filter_list:
-#   - name: get_response
-#     filter:
-#       - function: "regex"
-#         regex_pattern: ".*\\b([A-D])\\b"
-#       - function: take_first
 metadata:
   version: 3.0
