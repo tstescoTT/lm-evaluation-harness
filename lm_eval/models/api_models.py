@@ -595,7 +595,9 @@ class TemplateAPI(TemplateLM):
                     f"Retry attempt {retry_state.attempt_number}"
                 ),
             )(self.amodel_call)
-            # Create tasks for each batch of request
+            request_batches = list(chunks(requests, n=self._batch_size))
+            cache_key_batches = list(chunks(cache_keys, n=self._batch_size))
+            ctxlen_batches = list(chunks(ctxlens, n=self._batch_size))
             tasks = [
                 asyncio.create_task(
                     retry_(
@@ -609,13 +611,46 @@ class TemplateAPI(TemplateLM):
                     )
                 )
                 for message, cache_key, ctxlen in zip(
-                    chunks(requests, n=self._batch_size),
-                    chunks(cache_keys, n=self._batch_size),
-                    chunks(ctxlens, n=self._batch_size),
+                    request_batches,
+                    cache_key_batches,
+                    ctxlen_batches,
                 )
             ]
 
-            return await tqdm_asyncio.gather(*tasks, desc="Requesting API")
+            pbar = tqdm_asyncio(total=len(tasks), desc="Requesting API")
+
+            async def _track(coro):
+                result = await coro
+                pbar.update(1)
+                return result
+
+            results = await asyncio.gather(
+                *[_track(t) for t in tasks], return_exceptions=True
+            )
+            pbar.close()
+
+            num_failed = sum(1 for r in results if isinstance(r, BaseException))
+            if num_failed:
+                eval_logger.error(
+                    f"{num_failed}/{len(results)} request batch(es) failed. "
+                    "Replacing with error sentinels to preserve partial results."
+                )
+
+            processed = []
+            for i, result in enumerate(results):
+                if isinstance(result, BaseException):
+                    batch_size = len(request_batches[i])
+                    if generate:
+                        processed.append(
+                            [f"__INFERENCE_ERROR__: {repr(result)}"] * batch_size
+                        )
+                    else:
+                        processed.append(
+                            [(float("-inf"), False)] * batch_size
+                        )
+                else:
+                    processed.append(result)
+            return processed
 
     def _loglikelihood_tokens(self, requests, **kwargs) -> List[Tuple[float, bool]]:
         assert self.tokenizer is not None, (
