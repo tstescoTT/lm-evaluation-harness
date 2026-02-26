@@ -509,6 +509,7 @@ class TemplateAPI(TemplateLM):
             **kwargs,
         )
         cache_method = "generate_until" if generate else "loglikelihood"
+        is_streaming = generate and str(payload.get("stream", False)).lower() == "true"
         acquired = await sem.acquire()
         try:
             async with session.post(
@@ -524,7 +525,12 @@ class TemplateAPI(TemplateLM):
                     )
                 # raising exception will retry the request
                 response.raise_for_status()
-                outputs = await response.json()
+
+                if is_streaming:
+                    outputs = await self._consume_sse_stream(response)
+                else:
+                    outputs = await response.json()
+
             answers = (
                 self.parse_generations(
                     outputs=outputs,
@@ -548,6 +554,59 @@ class TemplateAPI(TemplateLM):
         finally:
             if acquired:
                 sem.release()
+
+    async def _consume_sse_stream(self, response) -> dict:
+        """Read an SSE stream and return a dict matching the non-streaming
+        response format ({"choices": [{"index": i, "text": full_text}, ...]}).
+
+        If an error interrupts the stream after tokens have been received,
+        returns a synthetic response whose text is prefixed with
+        ``__PARTIAL_OUTPUT__`` so callers can identify incomplete generations.
+        """
+        accumulated: Dict[int, str] = {}
+        try:
+            while True:
+                line_bytes = await response.content.readline()
+                if not line_bytes:
+                    break
+                line = line_bytes.decode("utf-8").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    for choice in chunk.get("choices", []):
+                        idx = choice.get("index", 0)
+                        text = choice.get("text", "")
+                        accumulated[idx] = accumulated.get(idx, "") + text
+                except json.JSONDecodeError:
+                    continue
+        except BaseException as e:
+            if accumulated:
+                eval_logger.warning(
+                    f"Streaming interrupted ({repr(e)}). "
+                    f"Returning partial output for {len(accumulated)} choice(s)."
+                )
+                max_idx = max(accumulated.keys())
+                return {
+                    "choices": [
+                        {
+                            "index": i,
+                            "text": f"__PARTIAL_OUTPUT__ ({repr(e)}): "
+                            f"{accumulated.get(i, '')}",
+                        }
+                        for i in range(max_idx + 1)
+                    ]
+                }
+            raise
+
+        return {
+            "choices": [
+                {"index": i, "text": t} for i, t in sorted(accumulated.items())
+            ]
+        }
 
     def batch_loglikelihood_requests(
         self, chunks: Iterable[List[LogLikelihoodInputs]]
