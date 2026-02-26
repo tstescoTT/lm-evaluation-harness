@@ -466,3 +466,24 @@ class Run(SubCommand):
 
             if cfg.wandb_args:
                 wandb_logger.run.finish()
+
+            if cfg.log_samples:
+                sentinel_count = 0
+                for task_samples in samples.values():
+                    for sample in task_samples:
+                        for resp_group in sample.get("resps", []):
+                            for resp in resp_group:
+                                if isinstance(resp, str) and (
+                                    "__INFERENCE_ERROR__" in resp
+                                    or "__PARTIAL_OUTPUT__" in resp
+                                ):
+                                    sentinel_count += 1
+                if sentinel_count > 0:
+                    eval_logger.error(
+                        f"{sentinel_count} prompt(s) failed during inference. "
+                        "Sample logs have been saved for debugging."
+                    )
+                    raise RuntimeError(
+                        f"Evaluation completed with {sentinel_count} failed prompt(s). "
+                        "Check samples_*.jsonl for __INFERENCE_ERROR__ and __PARTIAL_OUTPUT__ entries."
+                    )
