@@ -509,6 +509,7 @@ class TemplateAPI(TemplateLM):
             **kwargs,
         )
         cache_method = "generate_until" if generate else "loglikelihood"
+        is_streaming = generate and str(payload.get("stream", False)).lower() == "true"
         acquired = await sem.acquire()
         try:
             async with session.post(
@@ -524,7 +525,12 @@ class TemplateAPI(TemplateLM):
                     )
                 # raising exception will retry the request
                 response.raise_for_status()
-                outputs = await response.json()
+
+                if is_streaming:
+                    outputs = await self._consume_sse_stream(response)
+                else:
+                    outputs = await response.json()
+
             answers = (
                 self.parse_generations(
                     outputs=outputs,
@@ -548,6 +554,59 @@ class TemplateAPI(TemplateLM):
         finally:
             if acquired:
                 sem.release()
+
+    async def _consume_sse_stream(self, response) -> dict:
+        """Read an SSE stream and return a dict matching the non-streaming
+        response format ({"choices": [{"index": i, "text": full_text}, ...]}).
+
+        If an error interrupts the stream after tokens have been received,
+        returns a synthetic response whose text is prefixed with
+        ``__PARTIAL_OUTPUT__`` so callers can identify incomplete generations.
+        """
+        accumulated: Dict[int, str] = {}
+        try:
+            while True:
+                line_bytes = await response.content.readline()
+                if not line_bytes:
+                    break
+                line = line_bytes.decode("utf-8").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    for choice in chunk.get("choices", []):
+                        idx = choice.get("index", 0)
+                        text = choice.get("text", "")
+                        accumulated[idx] = accumulated.get(idx, "") + text
+                except json.JSONDecodeError:
+                    continue
+        except BaseException as e:
+            if accumulated:
+                eval_logger.warning(
+                    f"Streaming interrupted ({repr(e)}). "
+                    f"Returning partial output for {len(accumulated)} choice(s)."
+                )
+                max_idx = max(accumulated.keys())
+                return {
+                    "choices": [
+                        {
+                            "index": i,
+                            "text": f"__PARTIAL_OUTPUT__ ({repr(e)}): "
+                            f"{accumulated.get(i, '')}",
+                        }
+                        for i in range(max_idx + 1)
+                    ]
+                }
+            raise
+
+        return {
+            "choices": [
+                {"index": i, "text": t} for i, t in sorted(accumulated.items())
+            ]
+        }
 
     def batch_loglikelihood_requests(
         self, chunks: Iterable[List[LogLikelihoodInputs]]
@@ -595,7 +654,9 @@ class TemplateAPI(TemplateLM):
                     f"Retry attempt {retry_state.attempt_number}"
                 ),
             )(self.amodel_call)
-            # Create tasks for each batch of request
+            request_batches = list(chunks(requests, n=self._batch_size))
+            cache_key_batches = list(chunks(cache_keys, n=self._batch_size))
+            ctxlen_batches = list(chunks(ctxlens, n=self._batch_size))
             tasks = [
                 asyncio.create_task(
                     retry_(
@@ -609,13 +670,46 @@ class TemplateAPI(TemplateLM):
                     )
                 )
                 for message, cache_key, ctxlen in zip(
-                    chunks(requests, n=self._batch_size),
-                    chunks(cache_keys, n=self._batch_size),
-                    chunks(ctxlens, n=self._batch_size),
+                    request_batches,
+                    cache_key_batches,
+                    ctxlen_batches,
                 )
             ]
 
-            return await tqdm_asyncio.gather(*tasks, desc="Requesting API")
+            pbar = tqdm_asyncio(total=len(tasks), desc="Requesting API")
+
+            async def _track(coro):
+                result = await coro
+                pbar.update(1)
+                return result
+
+            results = await asyncio.gather(
+                *[_track(t) for t in tasks], return_exceptions=True
+            )
+            pbar.close()
+
+            num_failed = sum(1 for r in results if isinstance(r, BaseException))
+            if num_failed:
+                eval_logger.error(
+                    f"{num_failed}/{len(results)} request batch(es) failed. "
+                    "Replacing with error sentinels to preserve partial results."
+                )
+
+            processed = []
+            for i, result in enumerate(results):
+                if isinstance(result, BaseException):
+                    batch_size = len(request_batches[i])
+                    if generate:
+                        processed.append(
+                            [f"__INFERENCE_ERROR__: {repr(result)}"] * batch_size
+                        )
+                    else:
+                        processed.append(
+                            [(float("-inf"), False)] * batch_size
+                        )
+                else:
+                    processed.append(result)
+            return processed
 
     def _loglikelihood_tokens(self, requests, **kwargs) -> List[Tuple[float, bool]]:
         assert self.tokenizer is not None, (
