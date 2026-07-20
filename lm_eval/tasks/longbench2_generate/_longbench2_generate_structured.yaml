@@ -1,0 +1,9 @@
+group: longbench2_generate_structured
+group_alias: "Long Structured Data Understanding (generate)"
+task:
+  - longbench2_generate_structured_tasks
+aggregate_metric_list:
+  - metric: exact_match
+    weight_by_size: True
+metadata:
+  version: 0.1

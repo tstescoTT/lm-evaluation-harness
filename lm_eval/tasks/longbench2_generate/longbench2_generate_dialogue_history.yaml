@@ -1,0 +1,7 @@
+include: _longbench2_generate_common.yaml
+tag:
+  - longbench2_generate_tasks
+  - longbench2_generate_history_tasks
+task: longbench2_generate_dialogue_history
+dataset_kwargs:
+  name: dialogue_history_qa

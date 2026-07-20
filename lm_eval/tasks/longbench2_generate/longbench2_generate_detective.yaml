@@ -1,0 +1,7 @@
+include: _longbench2_generate_common.yaml
+tag:
+  - longbench2_generate_tasks
+  - longbench2_generate_single_tasks
+task: longbench2_generate_detective
+dataset_kwargs:
+  name: detective
