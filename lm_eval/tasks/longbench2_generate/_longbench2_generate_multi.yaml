@@ -1,9 +1,0 @@
-group: longbench2_generate_multi
-group_alias: "Multi-Document QA (generate)"
-task:
-  - longbench2_generate_multi_tasks
-aggregate_metric_list:
-  - metric: exact_match
-    weight_by_size: True
-metadata:
-  version: 0.1

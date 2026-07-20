@@ -1,7 +1,0 @@
-include: _longbench2_generate_common.yaml
-tag:
-  - longbench2_generate_tasks
-  - longbench2_generate_multi_tasks
-task: longbench2_generate_news_multi
-dataset_kwargs:
-  name: multinews

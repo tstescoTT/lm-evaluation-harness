@@ -32,6 +32,32 @@ eval_logger = logging.getLogger(__name__)
 
 _DATASET_PATH = "recursal/longbench-v2"
 
+# All recursal/longbench-v2 subsets (config names). The task concatenates every
+# subset into a single dataset and filters by ISL, so a narrow ISL window that
+# empties individual domains does not break the run.
+_ALL_CONFIGS = (
+    "academic_multi",
+    "academic_single",
+    "agent_history_qa",
+    "code_repo_qa",
+    "detective",
+    "dialogue_history_qa",
+    "event_ordering",
+    "financial_multi",
+    "financial_single",
+    "government_multi",
+    "government_single",
+    "graph_reasoning",
+    "legal_multi",
+    "legal_single",
+    "literary",
+    "manyshot_learning",
+    "multinews",
+    "new_language_translation",
+    "table_qa",
+    "user_guide_qa",
+)
+
 
 # ---------------------------------------------------------------------------
 # Dataset loading + ISL filtering
@@ -53,6 +79,15 @@ def _compute_isl(batch: dict, pretrained: Optional[str] = None) -> dict:
     return {"_isl": [len(ids) for ids in encoded["input_ids"]]}
 
 
+def _load_all_subsets() -> datasets.Dataset:
+    """Concatenate every recursal/longbench-v2 subset into one dataset."""
+    parts = [
+        datasets.load_dataset(_DATASET_PATH, cfg, split="train", trust_remote_code=True)
+        for cfg in _ALL_CONFIGS
+    ]
+    return datasets.concatenate_datasets(parts)
+
+
 def load_longbench2(
     name: Optional[str] = None,
     minimum_isl: Optional[int] = None,
@@ -61,18 +96,25 @@ def load_longbench2(
     tokenizer_num_proc: int = 32,
     **kwargs,
 ) -> Dict[str, datasets.Dataset]:
-    """Load a recursal/longbench-v2 subset, optionally filtered by ISL range.
+    """Load LongBench v2 as a single combined dataset, filtered by ISL range.
+
+    All 20 recursal/longbench-v2 subsets are concatenated into one dataset (so a
+    narrow ISL window that empties individual domains does not crash lm-eval),
+    then filtered by input sequence length.
 
     Args:
-        name: recursal/longbench-v2 config (subset) name, e.g. ``code_repo_qa``.
+        name: optional single subset to load instead of all (e.g. ``code_repo_qa``).
         minimum_isl: keep samples whose context tokenizes to >= this many tokens.
         maximum_isl: keep samples whose context tokenizes to <= this many tokens.
         pretrained: HF tokenizer used to measure ISL. Required when filtering.
         tokenizer_num_proc: parallel worker processes for the tokenization pass.
     """
-    ds = datasets.load_dataset(
-        _DATASET_PATH, name, split="train", trust_remote_code=True
-    )
+    if name:
+        ds = datasets.load_dataset(
+            _DATASET_PATH, name, split="train", trust_remote_code=True
+        )
+    else:
+        ds = _load_all_subsets()
 
     if minimum_isl is None and maximum_isl is None:
         return {"train": ds}

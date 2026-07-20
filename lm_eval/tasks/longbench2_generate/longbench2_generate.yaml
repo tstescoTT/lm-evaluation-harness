@@ -1,3 +1,4 @@
+task: longbench2_generate
 custom_dataset: !function utils.load_longbench2
 test_split: train
 output_type: generate_until
