@@ -1,0 +1,22 @@
+task: longbench2_generate
+custom_dataset: !function utils.load_longbench2
+# Data is loaded via custom_dataset above. dataset_path is set empty (as RULER
+# does) only so the key exists in the results config for report tooling.
+dataset_path: ""
+test_split: train
+output_type: generate_until
+doc_to_text: "Please read the following text and answer the question below.\n\n<text>\n{{context}}\n</text>\n\nWhat is the correct answer to this question: {{question.strip()}}\nChoices:\n(A) {{choices[0]}}\n(B) {{choices[1]}}\n(C) {{choices[2]}}\n(D) {{choices[3]}}\n\nPlease reason step by step. Your final answer must be only (A), (B), (C), or (D) within \\boxed{}.\nAnswer:"
+doc_to_target: answer
+process_results: !function utils.process_results
+generation_kwargs:
+  until: []
+  do_sample: true
+  temperature: 1.0
+  top_p: 0.95
+  max_gen_toks: 8192
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+metadata:
+  version: 0.1
