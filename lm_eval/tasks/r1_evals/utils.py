@@ -1,4 +1,5 @@
 from lm_eval.tasks.gpqa.zeroshot.utils import process_docs
+from lm_eval.filters.extraction import BoxedChoiceFilter
 from typing import Dict, List
 
 import re
@@ -54,16 +55,36 @@ def process_gpqa_docs(dataset):
 
 
 
+# Shared robust A-D extractor. Prioritizes a clean \boxed{} letter, then strong
+# answer markers, then delegates to a constrained [A-D] multi_choice_regex (paren
+# + choice-text). This replaces the old extract_answer/last-number path, which
+# grabbed chemistry stereodescriptors like (E)/(R)/(H) or a boxed formula instead
+# of the answer choice. See lm_eval/filters/extraction.py::BoxedChoiceFilter.
+_BOXED_CHOICE = BoxedChoiceFilter()
+
+
 def process_results_gpqa(doc: dict, results: List[str]) -> Dict[str, int]:
-    
-    candidate = choice_answer_clean(postprocess(results[0]))
+
+    # Expose the choice texts under "choices" so the extractor can also match an
+    # answer written out as the choice text rather than a letter. The GPQA doc
+    # carries choice1..choice4 (no "choices" list), so build it here.
+    extract_doc = dict(doc)
+    if not extract_doc.get("choices"):
+        choice_texts = [doc.get(f"choice{i}") for i in range(1, 5)]
+        choice_texts = [c for c in choice_texts if c]
+        if choice_texts:
+            extract_doc["choices"] = choice_texts
+
+    candidate = choice_answer_clean(
+        _BOXED_CHOICE.apply([[results[0]]], [extract_doc])[0][0]
+    )
     gold = choice_answer_clean(postprocess_target(doc["answer"]))
     retval = 0
 
     if not gold:
         print(doc, candidate, gold)
-    
-    retval =exact_match_fn(gold,candidate)
+
+    retval = exact_match_fn(gold, candidate)
 
     results = {
         "exact_match": retval,

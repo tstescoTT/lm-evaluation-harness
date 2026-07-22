@@ -235,3 +235,136 @@ class MultiChoiceRegexFilter(RegexFilter):
             filtered_resps.append(filtered)
 
         return filtered_resps
+
+
+@register_filter("boxed_choice")
+class BoxedChoiceFilter(Filter):
+    r"""Robust A-D multiple-choice extractor for generate-then-answer tasks.
+
+    ``multi_choice_regex`` with ``regex_pattern: "(\([A-Z]\))"`` and
+    ``group_select: -1`` takes the LAST parenthesized capital letter anywhere in
+    the response. On reasoning outputs (e.g. GPQA) that is routinely a chemistry
+    stereodescriptor / bound variable inside a formula -- ``(E)-bicyclo...`` ->
+    ``(E)``, ``((R)-...`` -> ``(R)``, ``(choice B) ... e^{3J}`` -> ``(J)`` --
+    not the answer choice.
+
+    Extraction priority (all constrained to A-D):
+      1. A ``\\boxed{}`` whose content is *cleanly* a choice letter (e.g.
+         ``\\boxed{A}``, ``\\boxed{(A)}``, ``\\boxed{\\text{A}}``). Boxes that
+         hold a value/formula are ignored here (their LaTeX command names like
+         ``\\displaystyle`` contain A-D letters and must not be mistaken for the
+         answer).
+      2. A STRONG answer marker only: "answer"/"the answer"/"final answer"/
+         "correct answer"/"correct choice" optionally followed by is/:/= and
+         ``**``/``(`` then the letter. The LAST such match wins (models restate
+         the final choice near the end). Covers ``Answer: (B)``,
+         ``Correct choice: C``. Bare "choice"/"option" are intentionally NOT
+         markers -- they also occur in explanatory prose ("option B has the
+         wrong sign", "the only choice is (C)") and would grab the wrong letter;
+         those are resolved by step 3 via the parenthesized answer.
+      3. Delegation to ``multi_choice_regex`` constrained to ``[A-D]`` (only when
+         the doc carries ``choices``) for the last ``(A-D)`` paren AND for
+         answers written out as the choice *text* rather than a letter.
+
+    Output is ``"(X)"`` to match the ``"(A)"``-style target, else ``fallback``.
+    """
+
+    # Only STRONG answer markers fire here. Bare "choice"/"option" are
+    # deliberately excluded: they also appear in explanatory prose ("option B
+    # has the wrong sign", "the only choice is ...") and would hijack the result.
+    # Those are handled by the paren/choice-text delegation below, which keys on
+    # the parenthesized letter (only the real answer is written as "(X)").
+    _MARKER_RE = re.compile(
+        r"(?:final\s+answer|correct\s+answer|correct\s+choice|the\s+answer|answer)s?"
+        r"\b\s*(?:is|are|:|=|->|=>)?\s*\*{0,2}\s*\(?\s*([A-D])(?![A-Za-z])",
+        flags=re.IGNORECASE,
+    )
+    _CLEAN_BOXED_RE = re.compile(r"^\(?([A-D])\)?$", flags=re.IGNORECASE)
+
+    def __init__(self, fallback: str = "[invalid]") -> None:
+        self.fallback = fallback
+        # Constrained multi_choice_regex reused for paren + choice-text matching.
+        self._mcr = MultiChoiceRegexFilter(
+            regex_pattern=r"(\([A-D]\))",
+            group_select=-1,
+            fallback=fallback,
+            ignore_case=True,
+            ignore_punctuation=True,
+        )
+
+    @staticmethod
+    def _strip_think(text: str) -> str:
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"^.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+        return text.strip()
+
+    @staticmethod
+    def _extract_boxed(text: str) -> str:
+        r"""Content of the last ``\boxed{...}`` via brace matching, else ''."""
+        if "boxed" not in text:
+            return ""
+        ans = text.split("boxed")[-1]
+        if not ans:
+            return ""
+        if ans[0] == "{":
+            stack = 1
+            out = ""
+            for c in ans[1:]:
+                if c == "{":
+                    stack += 1
+                    out += c
+                elif c == "}":
+                    stack -= 1
+                    if stack == 0:
+                        break
+                    out += c
+                else:
+                    out += c
+            return out
+        return ans.split("$")[0].strip()
+
+    def _clean_boxed_letter(self, text: str) -> str:
+        """Return the letter only if the box holds *just* a choice letter."""
+        boxed = self._extract_boxed(text)
+        if not boxed:
+            return ""
+        s = boxed.strip()
+        # unwrap \text{...}/\mathrm{...}/\mathbf{...} and drop $, *, whitespace
+        s = re.sub(r"\\(?:text|mathrm|mathbf|rm|bf|mathsf)\s*\{([^}]*)\}", r"\1", s)
+        s = s.replace("$", "").replace("*", "").strip()
+        m = self._CLEAN_BOXED_RE.match(s)
+        return m.group(1).upper() if m else ""
+
+    def _marker_letter(self, text: str) -> str:
+        matches = self._MARKER_RE.findall(text)
+        return matches[-1].upper() if matches else ""
+
+    def _extract_one(self, pred: str, doc: dict) -> str:
+        if not isinstance(pred, str) or not pred:
+            return self.fallback
+        text = self._strip_think(pred)
+
+        # 1) Boxed answer, only if it is cleanly a choice letter.
+        letter = self._clean_boxed_letter(text)
+        if letter:
+            return f"({letter})"
+
+        # 2) Explicit answer/choice marker (last occurrence).
+        letter = self._marker_letter(text)
+        if letter:
+            return f"({letter})"
+
+        # 3) Constrained multi_choice_regex (paren + choice-text). Needs choices.
+        if isinstance(doc, dict) and doc.get("choices"):
+            return self._mcr.apply([[text]], [doc])[0][0]
+
+        # 3b) No choices available: last (A-D) paren as a final resort.
+        paren = re.findall(r"\(([A-D])\)", text, flags=re.IGNORECASE)
+        return f"({paren[-1].upper()})" if paren else self.fallback
+
+    def apply(self, resps, docs):
+        filtered_resps = []
+        for group, doc in zip(resps, docs, strict=False):
+            filtered = [self._extract_one(resp, doc) for resp in group]
+            filtered_resps.append(filtered)
+        return filtered_resps

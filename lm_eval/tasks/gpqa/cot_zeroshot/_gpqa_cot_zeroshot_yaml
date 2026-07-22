@@ -6,7 +6,7 @@ training_split: train
 # Because huggingface dataset only has train split
 validation_split: train
 test_split: null
-doc_to_text: "What is the correct answer to this question:{{Question}}\nChoices:\n(A) {{choice1}}\n(B) {{choice2}}\n(C) {{choice3}}\n(D) {{choice4}}\nLet's think step by step: "
+doc_to_text: "What is the correct answer to this question:{{Question}}\nChoices:\n(A) {{choice1}}\n(B) {{choice2}}\n(C) {{choice3}}\n(D) {{choice4}}\nPlease reason step by step, and put your final answer (only the letter A, B, C, or D) within \\boxed{}.\nAnswer:"
 doc_to_target: answer
 filter_list:
   - name: "strict-match"
@@ -14,13 +14,15 @@ filter_list:
       - function: "regex"
         regex_pattern: "(?<=The answer is )(.*)(?=.)"
       - function: "take_first"
+  # flexible-extract now uses the boxed_choice filter: it reads the \boxed{}
+  # answer first, then explicit answer markers, and only matches A-D. This fixes
+  # the old multi_choice_regex which took the last "(X)" in the response and so
+  # grabbed chemistry stereodescriptors like (E)/(R)/(H) instead of the choice.
+  # Kept under the "flexible-extract" name so the metric key
+  # (exact_match,flexible-extract) is unchanged for report tooling.
   - name: "flexible-extract"
     filter:
-      - function: "multi_choice_regex"
-        group_select: -1
-        ignore_case: true
-        ignore_punctuation: true
-        regex_pattern: "(\\([A-Z]\\))"
+      - function: "boxed_choice"
       - function: "take_first"
 generation_kwargs:
   until:
