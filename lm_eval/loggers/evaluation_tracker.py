@@ -34,6 +34,28 @@ if TYPE_CHECKING:
 eval_logger = logging.getLogger(__name__)
 
 
+def _extract_reasoning(value):
+    """Recursively mirror the structure of ``resps`` and pull out any
+    reasoning traces carried on generation strings.
+
+    Chat generations produced against reasoning-capable endpoints are
+    ``ChatGeneration`` instances (a ``str`` subclass) exposing
+    ``reasoning_content``. Returns ``(found, reasoning)`` where ``reasoning``
+    has the same nesting as ``value`` so it aligns 1:1 with ``resps``.
+    """
+    if isinstance(value, (list, tuple)):
+        found = False
+        extracted = []
+        for item in value:
+            item_found, item_reasoning = _extract_reasoning(item)
+            found = found or item_found
+            extracted.append(item_reasoning)
+        return found, extracted
+    if hasattr(value, "reasoning_content"):
+        return True, value.reasoning_content
+    return False, None
+
+
 @dataclass(init=False)
 class GeneralConfigTracker:
     """Tracker for the evaluation parameters.
@@ -355,6 +377,14 @@ class EvaluationTracker:
                             arguments[f"gen_args_{i}"] = {}
                             for j, tmp in enumerate(arg):
                                 arguments[f"gen_args_{i}"][f"arg_{j}"] = tmp
+
+                        # Preserve any reasoning traces before sanitize_list
+                        # collapses ChatGeneration back to plain strings.
+                        found_reasoning, reasoning = _extract_reasoning(
+                            sample["resps"]
+                        )
+                        if found_reasoning:
+                            sample["reasoning_content"] = reasoning
 
                         sample["resps"] = sanitize_list(sample["resps"])
                         sample["filtered_resps"] = sanitize_list(
