@@ -5,7 +5,7 @@ from operator import itemgetter
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from lm_eval.api.registry import register_model
-from lm_eval.models.api_models import TemplateAPI
+from lm_eval.models.api_models import ChatGeneration, TemplateAPI
 from lm_eval.models.utils import handle_stop_sequences
 
 
@@ -209,6 +209,11 @@ class LocalChatCompletion(LocalCompletionsAPI):
 
     @staticmethod
     def parse_generations(outputs: Union[Dict, List[Dict]], **kwargs) -> List[str]:
+        # Opt-in: only carry the reasoning trace when explicitly requested (set
+        # by the eval launcher for tasks that want it). Off by default so the
+        # answer is a plain str and nothing reaches the sample logs, matching
+        # stock behavior.
+        preserve_reasoning = bool(os.environ.get("LM_EVAL_PRESERVE_REASONING"))
         res = []
         if not isinstance(outputs, list):
             outputs = [outputs]
@@ -216,12 +221,26 @@ class LocalChatCompletion(LocalCompletionsAPI):
             try:
                 tmp = [None] * len(out["choices"])
                 for choices in out["choices"]:
-                    tmp[choices["index"]] = choices["message"]["content"]
+                    message = choices["message"]
+                    content = message["content"] or ""
+                    reasoning = message.get("reasoning_content")
+                    if reasoning is None:
+                        reasoning = message.get("reasoning")
+                    # Keep the answer as-is for scoring; carry the (optional)
+                    # reasoning trace on the string so it can be logged without
+                    # ever reaching filters or metrics.
+                    tmp[choices["index"]] = (
+                        ChatGeneration(content, reasoning)
+                        if reasoning is not None and preserve_reasoning
+                        else content
+                    )
             except Exception as e:
                 # account for cases that generation is blocked by content filter,
                 # which is common for Azure OpenAI Service,
                 # not sure if need to account for multiple choices
-                eval_logger.warning(f"Could not parse generations: {e}")
+                eval_logger.warning(
+                    f"Could not parse generations: {e}; raw API response: {out!r}"
+                )
                 tmp = [""]
             res = res + tmp
         return res

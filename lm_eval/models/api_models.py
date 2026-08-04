@@ -58,6 +58,118 @@ class JsonChatStr(NamedTuple):
         return self.prompt.encode(encoding)
 
 
+class ChatGeneration(str):
+    """A generated answer string that also carries the model's separate
+    ``reasoning_content`` (chain-of-thought).
+
+    Reasoning-capable chat endpoints return the final answer in
+    ``message.content`` and the thinking trace in ``message.reasoning_content``
+    (some servers use ``message.reasoning``). We must not concatenate the two:
+    task filters, stop sequences, and metrics operate on the answer only. By
+    subclassing ``str`` the value behaves exactly like the answer everywhere
+    downstream while the reasoning rides along on an attribute, so it can be
+    surfaced in the per-sample logs without ever leaking into scoring.
+    """
+
+    def __new__(cls, content: str, reasoning_content: str = ""):
+        value = super().__new__(cls, content)
+        value.reasoning_content = reasoning_content
+        return value
+
+
+def _extract_stream_reasoning(delta: dict):
+    """Return the reasoning fragment from a streaming chat ``delta`` (or None).
+
+    Different servers spell the field differently; accept both.
+    """
+    if "reasoning_content" in delta:
+        return delta.get("reasoning_content")
+    if "reasoning" in delta:
+        return delta.get("reasoning")
+    return None
+
+
+def _stream_chunk_parts(choice: dict):
+    """Split one SSE ``choice`` into ``(text, reasoning, is_chat_chunk)``.
+
+    Chat-completions stream tokens under ``delta`` (content + reasoning);
+    text-completions stream them under ``text``.
+    """
+    if "delta" in choice:
+        delta = choice.get("delta") or {}
+        return delta.get("content") or "", _extract_stream_reasoning(delta), True
+    return choice.get("text", ""), None, False
+
+
+def _format_sse_response(
+    accumulated_text: Dict[int, str],
+    accumulated_reasoning: Dict[int, str],
+    uses_chat_chunks: bool,
+) -> dict:
+    """Rebuild a non-streaming-shaped response from accumulated SSE fragments.
+
+    Chat chunks are emitted as ``{"index", "message": {"content", ...}}`` so the
+    chat parser (which reads ``message.content``) works on streamed responses;
+    text chunks keep the ``{"index", "text"}`` shape. ``reasoning_content`` is
+    attached to the message when present.
+    """
+    choices = []
+    indexes = sorted(set(accumulated_text) | set(accumulated_reasoning))
+    for index in indexes:
+        text = accumulated_text.get(index, "")
+        if uses_chat_chunks:
+            message = {"content": text}
+            if index in accumulated_reasoning:
+                message["reasoning_content"] = accumulated_reasoning[index]
+            choices.append({"index": index, "message": message})
+        else:
+            choices.append({"index": index, "text": text})
+    return {"choices": choices}
+
+
+def _consume_requests_sse_stream(response) -> dict:
+    """Synchronous counterpart of ``TemplateAPI._consume_sse_stream`` for the
+    blocking ``requests``-based ``model_call`` path (used at concurrency 1).
+    """
+    accumulated_text: Dict[int, str] = {}
+    accumulated_reasoning: Dict[int, str] = {}
+    uses_chat_chunks = False
+    try:
+        for line in response.iter_lines(decode_unicode=True):
+            if isinstance(line, bytes):
+                line = line.decode("utf-8")
+            line = str(line or "").strip()
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[len("data:"):].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            for choice in chunk.get("choices", []):
+                index = choice.get("index", 0)
+                text, reasoning, is_chat_chunk = _stream_chunk_parts(choice)
+                uses_chat_chunks = uses_chat_chunks or is_chat_chunk
+                accumulated_text[index] = accumulated_text.get(index, "") + text
+                if reasoning is not None:
+                    accumulated_reasoning[index] = (
+                        accumulated_reasoning.get(index, "") + reasoning
+                    )
+    except BaseException as exc:
+        if not accumulated_text and not accumulated_reasoning:
+            raise
+        prefix = f"__PARTIAL_OUTPUT__ ({repr(exc)}): "
+        indexes = set(accumulated_text) | set(accumulated_reasoning)
+        accumulated_text = {
+            i: prefix + accumulated_text.get(i, "") for i in indexes
+        }
+    return _format_sse_response(
+        accumulated_text, accumulated_reasoning, uses_chat_chunks
+    )
+
+
 def create_image_prompt(
     imgs: list["Image.Image"], chat: dict, fmt: str = "PNG"
 ) -> dict:
@@ -461,25 +573,33 @@ class TemplateAPI(TemplateLM):
     ) -> Optional[dict]:
         # !!! Copy: shared dict for each request, need new object !!!
         gen_kwargs = copy.deepcopy(gen_kwargs)
+        payload = self._create_payload(
+            self.create_message(messages),
+            generate=generate,
+            gen_kwargs=gen_kwargs,
+            seed=self._seed,
+            eos=self.eos_string,
+            **kwargs,
+        )
+        # Stock model_call could not read a streamed response (it json()-decodes
+        # the SSE body and fails). Consume the stream when the payload requests
+        # it so the blocking path works against streaming-only endpoints.
+        is_streaming = generate and str(payload.get("stream", False)).lower() == "true"
         try:
             response = requests.post(
                 self.base_url,
-                json=self._create_payload(
-                    self.create_message(messages),
-                    generate=generate,
-                    gen_kwargs=gen_kwargs,
-                    seed=self._seed,
-                    eos=self.eos_string,
-                    **kwargs,
-                ),
+                json=payload,
                 headers=self.header,
                 verify=self.verify_certificate,
+                stream=is_streaming,
             )
             if not response.ok:
                 eval_logger.warning(
                     f"API request failed with error message: {response.text}. Retrying..."
                 )
             response.raise_for_status()
+            if is_streaming:
+                return _consume_requests_sse_stream(response)
             return response.json()
         except RetryError:
             eval_logger.error(
@@ -557,13 +677,22 @@ class TemplateAPI(TemplateLM):
 
     async def _consume_sse_stream(self, response) -> dict:
         """Read an SSE stream and return a dict matching the non-streaming
-        response format ({"choices": [{"index": i, "text": full_text}, ...]}).
+        response format.
+
+        Handles both text-completions chunks (``choice.text`` ->
+        ``{"index", "text"}``) and chat-completions chunks
+        (``choice.delta.content`` -> ``{"index", "message": {"content"}}``).
+        A reasoning trace streamed under ``delta.reasoning_content`` /
+        ``delta.reasoning`` is accumulated separately and attached to the
+        message so it can be preserved without polluting the answer.
 
         If an error interrupts the stream after tokens have been received,
         returns a synthetic response whose text is prefixed with
         ``__PARTIAL_OUTPUT__`` so callers can identify incomplete generations.
         """
-        accumulated: Dict[int, str] = {}
+        accumulated_text: Dict[int, str] = {}
+        accumulated_reasoning: Dict[int, str] = {}
+        uses_chat_chunks = False
         try:
             while True:
                 line_bytes = await response.content.readline()
@@ -577,36 +706,34 @@ class TemplateAPI(TemplateLM):
                     break
                 try:
                     chunk = json.loads(data)
-                    for choice in chunk.get("choices", []):
-                        idx = choice.get("index", 0)
-                        text = choice.get("text", "")
-                        accumulated[idx] = accumulated.get(idx, "") + text
                 except json.JSONDecodeError:
                     continue
+                for choice in chunk.get("choices", []):
+                    index = choice.get("index", 0)
+                    text, reasoning, is_chat_chunk = _stream_chunk_parts(choice)
+                    uses_chat_chunks = uses_chat_chunks or is_chat_chunk
+                    accumulated_text[index] = accumulated_text.get(index, "") + text
+                    if reasoning is not None:
+                        accumulated_reasoning[index] = (
+                            accumulated_reasoning.get(index, "") + reasoning
+                        )
         except BaseException as e:
-            if accumulated:
-                eval_logger.warning(
-                    f"Streaming interrupted ({repr(e)}). "
-                    f"Returning partial output for {len(accumulated)} choice(s)."
-                )
-                max_idx = max(accumulated.keys())
-                return {
-                    "choices": [
-                        {
-                            "index": i,
-                            "text": f"__PARTIAL_OUTPUT__ ({repr(e)}): "
-                            f"{accumulated.get(i, '')}",
-                        }
-                        for i in range(max_idx + 1)
-                    ]
-                }
-            raise
+            if not accumulated_text and not accumulated_reasoning:
+                raise
+            eval_logger.warning(
+                f"Streaming interrupted ({repr(e)}). Returning partial output "
+                f"for {len(set(accumulated_text) | set(accumulated_reasoning))} "
+                "choice(s)."
+            )
+            prefix = f"__PARTIAL_OUTPUT__ ({repr(e)}): "
+            indexes = set(accumulated_text) | set(accumulated_reasoning)
+            accumulated_text = {
+                i: prefix + accumulated_text.get(i, "") for i in indexes
+            }
 
-        return {
-            "choices": [
-                {"index": i, "text": t} for i, t in sorted(accumulated.items())
-            ]
-        }
+        return _format_sse_response(
+            accumulated_text, accumulated_reasoning, uses_chat_chunks
+        )
 
     def batch_loglikelihood_requests(
         self, chunks: Iterable[List[LogLikelihoodInputs]]
