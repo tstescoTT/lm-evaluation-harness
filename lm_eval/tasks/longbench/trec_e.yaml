@@ -11,7 +11,7 @@ doc_to_target: '{{answers}}'
 target_delimiter: ""
 process_results: !function metrics.get_classification_with_score
 generation_kwargs:
-  max_gen_toks: 64
+  max_gen_toks: 512
   temperature: 1
   do_sample: False
   until: ["\n"]
