@@ -101,6 +101,27 @@ def _stream_chunk_parts(choice: dict):
     return choice.get("text", ""), None, False
 
 
+def _sse_error_message(chunk: dict) -> Optional[str]:
+    """Return the error text carried by an SSE chunk, or None.
+
+    A streaming endpoint answers ``200 OK`` and only then embeds the failure in
+    the stream body, e.g.::
+
+        data: {"error": {"message": "...max session count reached...", "code": 500}}
+        data: [DONE]
+
+    so ``raise_for_status()`` cannot see it. Such a chunk carries no ``choices``
+    at all, so callers that only read ``choices`` would return zero answers for
+    the request and silently shrink the response list.
+    """
+    error = chunk.get("error")
+    if error is None:
+        return None
+    if isinstance(error, dict):
+        return str(error.get("message") or error)
+    return str(error)
+
+
 def _format_sse_response(
     accumulated_text: Dict[int, str],
     accumulated_reasoning: Dict[int, str],
@@ -148,6 +169,11 @@ def _consume_requests_sse_stream(response) -> dict:
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
+            error_message = _sse_error_message(chunk)
+            if error_message is not None:
+                raise RuntimeError(
+                    f"API returned an error in the SSE stream: {error_message}"
+                )
             for choice in chunk.get("choices", []):
                 index = choice.get("index", 0)
                 text, reasoning, is_chat_chunk = _stream_chunk_parts(choice)
@@ -708,6 +734,14 @@ class TemplateAPI(TemplateLM):
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+                error_message = _sse_error_message(chunk)
+                if error_message is not None:
+                    # Raise so tenacity retries (a session-cap rejection is
+                    # usually transient); if tokens already arrived the handler
+                    # below keeps them as partial output instead.
+                    raise RuntimeError(
+                        f"API returned an error in the SSE stream: {error_message}"
+                    )
                 for choice in chunk.get("choices", []):
                     index = choice.get("index", 0)
                     text, reasoning, is_chat_chunk = _stream_chunk_parts(choice)
@@ -822,20 +856,37 @@ class TemplateAPI(TemplateLM):
                     "Replacing with error sentinels to preserve partial results."
                 )
 
+            def _sentinels(reason: str, count: int) -> list:
+                if generate:
+                    return [f"__INFERENCE_ERROR__: {reason}"] * count
+                return [(float("-inf"), False)] * count
+
             processed = []
             for i, result in enumerate(results):
+                batch_size = len(request_batches[i])
                 if isinstance(result, BaseException):
-                    batch_size = len(request_batches[i])
-                    if generate:
-                        processed.append(
-                            [f"__INFERENCE_ERROR__: {repr(result)}"] * batch_size
-                        )
-                    else:
-                        processed.append(
-                            [(float("-inf"), False)] * batch_size
-                        )
-                else:
-                    processed.append(result)
+                    processed.append(_sentinels(repr(result), batch_size))
+                    continue
+                # amodel_call must return exactly one answer per input. A short
+                # return (e.g. a stream whose only payload was an error chunk,
+                # so it carried no "choices") would otherwise shrink the result
+                # list and resurface much later as an opaque "zip() argument 2
+                # is shorter than argument 1" from Collator.get_original.
+                got = 0 if result is None else len(result)
+                if got != batch_size:
+                    reason = (
+                        f"API returned {got} response(s) for a batch of {batch_size}"
+                    )
+                    eval_logger.error(
+                        "%s; padding with error sentinels. Raw response: %r",
+                        reason,
+                        result,
+                    )
+                    padded = list(result or [])[:batch_size]
+                    padded += _sentinels(reason, batch_size - len(padded))
+                    processed.append(padded)
+                    continue
+                processed.append(result)
             return processed
 
     def _loglikelihood_tokens(self, requests, **kwargs) -> List[Tuple[float, bool]]:
@@ -984,11 +1035,12 @@ class TemplateAPI(TemplateLM):
                     generate=True,
                     gen_kwargs=copy.deepcopy(all_gen_kwargs[0]),
                 )
+                generations = self.parse_generations(
+                    outputs=outputs,
+                    contexts=contexts,
+                )
                 for generated_text, context in zip(
-                    self.parse_generations(
-                        outputs=outputs,
-                        contexts=contexts,
-                    ),
+                    generations,
                     contexts,
                 ):
                     # Always append to res to maintain the correct number of items
@@ -1009,6 +1061,24 @@ class TemplateAPI(TemplateLM):
                             generated_text,
                         )
                     pbar.update(1)
+
+                # The zip() above is not strict, so a short parse would quietly
+                # drop requests from res and only fail much later, inside
+                # Collator.get_original. Sentinels keep one answer per request
+                # (and, unlike the loop above, are never cached).
+                missing = len(contexts) - len(generations)
+                if missing > 0:
+                    reason = (
+                        f"API returned {len(generations)} response(s) for a "
+                        f"batch of {len(contexts)}"
+                    )
+                    eval_logger.error(
+                        "%s; padding with error sentinels. Raw response: %r",
+                        reason,
+                        outputs,
+                    )
+                    res.extend([f"__INFERENCE_ERROR__: {reason}"] * missing)
+                    pbar.update(missing)
         else:
             for chunk in chunked:
                 contexts, all_gen_kwargs, encodings_list = zip(*chunk)
