@@ -6,7 +6,8 @@ task: longbench_lcc_e
 dataset_path: Xnhyacinth/LongBench
 test_split: test
 dataset_name: lcc_e
-doc_to_text: "Please complete the code given below. \n{{context}}Next line of code:"
+# Xnhyacinth/LongBench already includes the opening instruction in context.
+doc_to_text: "{{context}}Next line of code:\n"
 doc_to_target: '{{answers}}'
 process_results: !function metrics.get_code_sim_with_score
 generation_kwargs:
@@ -22,4 +23,4 @@ metric_list:
     aggregation: mean
     higher_is_better: True
 metadata:
-  version: 5.0
+  version: 5.1
