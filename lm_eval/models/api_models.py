@@ -23,7 +23,12 @@ from typing import (
 
 try:
     import requests
-    from aiohttp import ClientSession, ClientTimeout, TCPConnector
+    from aiohttp import (
+        ClientResponseError,
+        ClientSession,
+        ClientTimeout,
+        TCPConnector,
+    )
     from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
     from tqdm import tqdm
     from tqdm.asyncio import tqdm_asyncio
@@ -48,6 +53,24 @@ if TYPE_CHECKING:
 eval_logger = logging.getLogger(__name__)
 
 LogLikelihoodInputs = Tuple[Tuple[str, str], List[int], List[int]]
+
+
+def _describe_error(exc: BaseException) -> str:
+    """``repr(exc)``, minus the request headers.
+
+    ``repr(aiohttp.ClientResponseError)`` (and of its subclasses, e.g.
+    ``ContentTypeError``) includes the ``RequestInfo`` and with it every request
+    header, ``Authorization: Bearer <key>`` among them. The result of this
+    function ends up in logs and, as an error sentinel, in the per-sample
+    outputs, so keep only what tells a reader what failed.
+    """
+    if isinstance(exc, ClientResponseError):
+        url = exc.request_info.real_url.with_user(None)
+        return (
+            f"{type(exc).__name__}(status={exc.status}, "
+            f"message={exc.message!r}, url='{url}')"
+        )
+    return repr(exc)
 
 
 # utility class to keep track of json encoded chats
@@ -186,7 +209,7 @@ def _consume_requests_sse_stream(response) -> dict:
     except BaseException as exc:
         if not accumulated_text and not accumulated_reasoning:
             raise
-        prefix = f"__PARTIAL_OUTPUT__ ({repr(exc)}): "
+        prefix = f"__PARTIAL_OUTPUT__ ({_describe_error(exc)}): "
         indexes = set(accumulated_text) | set(accumulated_reasoning)
         accumulated_text = {
             i: prefix + accumulated_text.get(i, "") for i in indexes
@@ -695,7 +718,9 @@ class TemplateAPI(TemplateLM):
         # If the retries also fail
         except BaseException as e:
             outputs_str = locals().get('outputs', 'undefined')
-            eval_logger.error(f"Exception:{repr(e)}, {outputs_str}, retrying.")
+            eval_logger.error(
+                f"Exception:{_describe_error(e)}, {outputs_str}, retrying."
+            )
             raise e
         finally:
             if acquired:
@@ -755,11 +780,11 @@ class TemplateAPI(TemplateLM):
             if not accumulated_text and not accumulated_reasoning:
                 raise
             eval_logger.warning(
-                f"Streaming interrupted ({repr(e)}). Returning partial output "
+                f"Streaming interrupted ({_describe_error(e)}). Returning partial output "
                 f"for {len(set(accumulated_text) | set(accumulated_reasoning))} "
                 "choice(s)."
             )
-            prefix = f"__PARTIAL_OUTPUT__ ({repr(e)}): "
+            prefix = f"__PARTIAL_OUTPUT__ ({_describe_error(e)}): "
             indexes = set(accumulated_text) | set(accumulated_reasoning)
             accumulated_text = {
                 i: prefix + accumulated_text.get(i, "") for i in indexes
@@ -865,7 +890,7 @@ class TemplateAPI(TemplateLM):
             for i, result in enumerate(results):
                 batch_size = len(request_batches[i])
                 if isinstance(result, BaseException):
-                    processed.append(_sentinels(repr(result), batch_size))
+                    processed.append(_sentinels(_describe_error(result), batch_size))
                     continue
                 # amodel_call must return exactly one answer per input. A short
                 # return (e.g. a stream whose only payload was an error chunk,
